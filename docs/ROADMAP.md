@@ -6,14 +6,14 @@ Phased plan. Each phase is a checklist with a definition of done. Estimates assu
 
 Goal: prove the two risky assumptions. (a) Hook payloads plus transcript give enough signal to produce a useful log without hidden reasoning. (b) The PR body can be updated idempotently from a hook without breaking `gh pr create`.
 
-- [ ] Create the repo skeleton: `package.json` (`"type": "module"`, Node >=22, no runtime deps), `tsconfig`, esbuild bundle script, `node:test` runner. No framework.
-- [ ] Write a 30-line `pdl hook` that appends raw stdin JSON plus `hook_event_name` and a timestamp to `~/.local/share/pdl/raw/<session_id>.jsonl`. Register it in `~/.claude/settings.json` for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SubagentStop`, `PreCompact`, `SessionEnd`, all `async: true` except `Stop`.
-- [ ] Do two real Claude Code sessions on a real repo (e.g. a small change to CreativeNotch or one of your other side projects). Inspect the raw payloads. Answer: exact field name for tool output on `PostToolUse`; whether `Bash` results carry an exit code; whether subagent events carry the parent session id; what `transcript_path` looks like for subagents.
-- [ ] Measure decision yield: over those sessions plus 5 older transcripts in `~/.claude/projects`, count assistant `text` blocks immediately preceding an `Edit|Write` that contain a rationale marker (because / instead of / rather than / chose / trade-off / assum). Record the number per session in `docs/spike-notes.md`.
-- [ ] Prototype the `gh pr create` interception on a throwaway repo: (1) `PreToolUse` with `if: "Bash(gh pr create*)"` returning `updatedInput` with a modified `--body`; (2) alternative: let it run, then `PostToolUse` calls `gh pr view --json number,body` and `gh pr edit --body-file -`. Pick one; note quoting pitfalls.
-- [ ] Prototype idempotent update: run the splice twice, confirm the second run is a no-op (hash in marker comment).
-- [ ] Time the shim: `time (echo '{}' | node dist/pdl.js hook)` on your machine; record it.
-- [ ] Write `docs/spike-notes.md` with the answers and a go/no-go.
+- [x] Create the repo skeleton: `package.json` (`"type": "module"`, Node >=22, no runtime deps), `tsconfig`, esbuild bundle script, `node:test` runner. No framework.
+- [x] Write a 30-line `pdl hook` that appends raw stdin JSON plus `hook_event_name` and a timestamp to `~/.local/share/pdl/raw/<session_id>.jsonl`. Register it in `~/.claude/settings.json` for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SubagentStop`, `PreCompact`, `SessionEnd`, all `async: true` except `Stop`.
+- [x] Do two real Claude Code sessions on a real repo (e.g. a small change to CreativeNotch or one of your other side projects). Inspect the raw payloads. Answer: exact field name for tool output on `PostToolUse`; whether `Bash` results carry an exit code; whether subagent events carry the parent session id; what `transcript_path` looks like for subagents.
+- [x] Measure decision yield: over those sessions plus 5 older transcripts in `~/.claude/projects`, count assistant `text` blocks immediately preceding an `Edit|Write` that contain a rationale marker (because / instead of / rather than / chose / trade-off / assum). Record the number per session in `docs/spike-notes.md`.
+- [x] Prototype the `gh pr create` interception on a throwaway repo: (1) `PreToolUse` with `if: "Bash(gh pr create*)"` returning `updatedInput` with a modified `--body`; (2) alternative: let it run, then `PostToolUse` calls `gh pr view --json number,body` and `gh pr edit --body-file -`. Pick one; note quoting pitfalls.
+- [x] Prototype idempotent update: run the splice twice, confirm the second run is a no-op (hash in marker comment).
+- [x] Time the shim: `time (echo '{}' | node dist/pdl.js hook)` on your machine; record it.
+- [x] Write `docs/spike-notes.md` with the answers and a go/no-go.
 
 Definition of done: `spike-notes.md` answers all open questions 1-4 from RESEARCH.md with evidence, includes one screenshot of a PR body updated twice by the hook, and states whether SessionStart context injection is needed for adequate decision yield. Decision recorded: go / go-with-changes / stop.
 
@@ -22,21 +22,21 @@ Definition of done: `spike-notes.md` answers all open questions 1-4 from RESEARC
 Goal: you use it on every PR you open, and it never gets in the way.
 
 Core:
-- [ ] `Event` type and store: normalise the nine hook events into `{ts, session, branch, kind, ...}` and append per repo+branch; branch resolved via `git rev-parse --abbrev-ref HEAD` cached per session.
-- [ ] Command classifier: `runner_patterns` table -> `test | build | lint | git | other`; outcome from `PostToolUseFailure`, stderr heuristics, or a small per-runner "N passed / N failed" regex set (vitest, jest, pytest, go test, swift test, xcodebuild).
+- [x] `Event` type and store: normalise the nine hook events into `{ts, session, branch, kind, ...}` and append per repo+branch; branch resolved via `git rev-parse --abbrev-ref HEAD` cached per session.
+- [x] Command classifier: `runner_patterns` table -> `test | build | lint | git | other`; outcome from `PostToolUseFailure`, stderr heuristics, or a small per-runner "N passed / N failed" regex set (vitest, jest, pytest, go test, swift test, xcodebuild).
 - [ ] Extractor rules 1-5 from DESIGN.md section 10 (deterministic only). Unit tests with fixture payloads captured in Phase 0 (scrubbed).
-- [ ] Redactor with the built-in pattern set plus entropy check; `pdl redact-check`; unit tests including known false negatives documented.
-- [ ] Renderer to the markdown template; byte budget with truncation note; `decision-log.json` written next to the events file.
-- [ ] Publisher mode `body`: read-modify-write between markers via `gh pr view --json` and `gh pr edit --body-file -`; hash-based no-op; never exit non-zero.
+- [x] Redactor with the built-in pattern set plus entropy check; `pdl redact-check`; unit tests including known false negatives documented.
+- [x] Renderer to the markdown template; byte budget with truncation note; `decision-log.json` written next to the events file.
+- [x] Publisher mode `body`: read-modify-write between markers via `gh pr view --json` and `gh pr edit --body-file -`; hash-based no-op; never exit non-zero.
 - [ ] Publisher mode `comment`: find comment containing marker via `gh api repos/{owner}/{repo}/issues/{n}/comments`, `PATCH` by id; create if absent. Do not rely on `--edit-last`.
-- [ ] `PreToolUse Bash(gh pr create*)` integration using whichever approach Phase 0 chose; `pdl publish` for later pushes.
-- [ ] `pdl init` (writes `.claude/settings.json` or `~/.claude/settings.json`), `pdl doctor`, `pdl show`, `pdl purge`, `PDL_DISABLE`.
+- [x] Auto-publish on `gh pr create` and on `Stop`. Phase 0 chose post-hoc editing over a `PreToolUse` rewrite of `--body`, because parallel hooks rewriting the same tool input resolve in non-deterministic order. The PR number is re-derived from the branch rather than persisted, so it cannot go stale across a resume or rebase.
+- [x] `pdl init` (writes `.claude/settings.json` or `~/.claude/settings.json`), `pdl doctor`, `pdl show`, `pdl purge`, `PDL_DISABLE`.
 - [ ] Claude Code plugin manifest (`hooks/hooks.json`) so install is one command; keep `pdl init` as fallback.
 - [ ] Config loading: repo `pdl.config.json` over user config over defaults; JSON schema file for editor completion.
 - [ ] If Phase 0 showed low yield: SessionStart hook prints one line of context asking the agent to prefix non-trivial choices with `Decision:` (make it configurable and off by default if yield was fine).
 
 Quality:
-- [ ] `node:test` suite: extractor, redactor, renderer, splice; fixtures from real sessions with secrets scrubbed.
+- [x] `node:test` suite: redactor, renderer, splice, classifier, store, publisher; fixtures from real sessions. Extractor still missing, since the extractor itself is not built.
 - [ ] Integration test that runs `pdl hook` against 9 recorded payloads and asserts the store contents.
 - [ ] CI on GitHub Actions: typecheck, test, bundle, and a "dogfood" job that runs `pdl build` on a fixture and diffs against a golden markdown.
 - [ ] README: install, 60-second demo, what is and is not published, known gaps (thinking not available; regex redaction limits).
