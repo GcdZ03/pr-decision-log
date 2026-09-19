@@ -10,7 +10,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "spike:yield": "node scripts/spike-yield.mjs",
     "spike:evidence": "node scripts/spike-evidence.mjs",
     "spike:summary": "node scripts/spike-summary-yield.mjs",

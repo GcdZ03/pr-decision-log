@@ -290,3 +290,42 @@ No `Stop` event was recorded, though the hook is registered. The reference notes
 - Shim latency 61 ms, `async: true`, fail-open.
 
 Phase 1 may begin. First task remains the `TEST_EDITED_AFTER_FAILURE` windowing fix, since the spike's own count of it was inflated.
+
+
+---
+
+## Phase 1, task 1: the windowing fix (done)
+
+Built test-first: 16 tests in `test/test-edited-after-failure.test.ts`, implementation in `src/flags/test-edited-after-failure.ts`, typecheck clean.
+
+### The over-count was worse than estimated
+
+`scripts/measure-flag.mjs` runs the naive heuristic and the windowed detector over the same 47 sessions:
+
+| | naive | windowed | retained |
+| --- | --- | --- | --- |
+| occurrences | 82 | **5** | 6% |
+| sessions flagged | 19 | **3** | 16% |
+
+The spike notes warned the number was inflated. It was inflated roughly **16x**. Had this shipped on the naive rule, the flag would have fired on 40% of sessions and been ignored within a week.
+
+### What each constraint removed
+
+1. **Window closes on green.** The naive rule latched: one failure made every later test edit suspicious forever.
+2. **Failure must name the file.** A failure in an unrelated suite is not evidence.
+3. **Additive edits excluded.** Adding assertions while fixing a failure is good practice. Only a non-increasing count is suspicious. Unknown counts are *not* suppressed, since we cannot prove the edit was additive.
+4. **Interrupted never opens a window.** A cancelled run says nothing about the code.
+5. **Source-file edits ignored.** Fixing the code under test is the desired behaviour; only the test itself is worth a reviewer's attention.
+6. **Deduplicated per window.** Five edits to one file in one window are one finding with a span, not five findings.
+
+### A security bug the corpus exposed
+
+The first measurement rendered the failing command verbatim into the flag detail. Real corpus commands are frequently whole shell scripts: multi-line, with absolute home paths, exported variables and heredocs. Putting that in a PR body violates DESIGN section 9 and could leak a token.
+
+`summariseCommand()` now reduces a command to one recognisable runner fragment: it prefers the line that actually invokes a runner (skipping banner `echo`/comment lines that merely mention one), strips a leading `cd ... &&`, and hard-caps the length. Three tests cover it, including one asserting a `ghp_`-style token in the command never reaches the detail string.
+
+**This is the argument for building the analyser before the renderer.** The leak was invisible until real data ran through it.
+
+### Known remaining false-positive source
+
+One of the 5 surviving flags shows `assertion count 0 -> 0` against a `Write` of a whole file, where before/after counts are not meaningful. Options for the next pass: treat whole-file writes as unknown rather than zero, or require a strictly negative delta when the tool is `Write`. Precision on a hand-labelled set is still owed before this flag is shown to anyone but me.
