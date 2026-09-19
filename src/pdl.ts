@@ -5,6 +5,14 @@ import { detectTestEditedAfterFailure } from './flags/test-edited-after-failure.
 import { buildLog } from './render/build-log.ts';
 import { render } from './render/render.ts';
 import { publish } from './publish/publish.ts';
+import { autoPublish } from './publish/auto-publish.ts';
+import { detectPrCreation } from './publish/detect-pr.ts';
+import { diagnose, worstStatus, type Facts } from './doctor/diagnose.ts';
+import { mergeHooks, pdlHookEvents } from './doctor/init.ts';
+import {
+  ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, writeSettings,
+  type Scope,
+} from './doctor/settings.ts';
 import { spawnSync } from 'node:child_process';
 
 function git(args: string[]): string {
@@ -59,10 +67,69 @@ function readStdin(): Promise<string> {
 async function hook(store: EventStore): Promise<void> {
   const raw = await readStdin();
   try {
-    handleHook(store, raw.trim() ? JSON.parse(raw) : {});
+    const payload = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    const event = handleHook(store, payload);
+    const sessionId = typeof payload['session_id'] === 'string' ? payload['session_id'] : '';
+
+    // Two triggers. `gh pr create` is when the pull request first exists, and
+    // `Stop` catches everything that happened after it was opened.
+    const created = event ? detectPrCreation(event) !== null : false;
+    const stopped = payload['hook_event_name'] === 'Stop';
+    if (sessionId && (created || stopped)) {
+      await autoPublish({ section: render(logFor(store, sessionId)) });
+    }
   } catch {
     // Fail open: a malformed payload must never break the agent loop.
   }
+}
+
+function init(scope: Scope): void {
+  const path = settingsPathFor(scope, repoRoot());
+  const existed = settingsExist(path);
+  const root = repoRoot();
+  const merged = mergeHooks(readSettings(path), hookCommand(process.argv[1], scope, root));
+  writeSettings(path, merged);
+
+  process.stdout.write(`${existed ? 'updated' : 'created'} ${path}\n`);
+  process.stdout.write(`  registered ${pdlHookEvents(merged).length} hook events\n`);
+  if (scope === 'project') {
+    process.stdout.write('  hooks stay dormant until you accept the trust dialog for this folder\n');
+  }
+}
+
+const ICON: Record<string, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL', skip: 'skip' };
+
+function doctor(store: EventStore): void {
+  const root = repoRoot();
+  const projectPath = settingsPathFor('project', root);
+  const userPath = settingsPathFor('user', root);
+  const project = readSettings(projectPath);
+  const user = readSettings(userPath);
+  const events = [...new Set([...pdlHookEvents(project), ...pdlHookEvents(user)])];
+
+  const facts: Facts = {
+    nodeVersion: process.version,
+    hookEvents: events,
+    settingsPath: pdlHookEvents(project).length > 0 ? projectPath : pdlHookEvents(user).length > 0 ? userPath : undefined,
+    recordedSessions: store.sessionCount(),
+    gh: ghStatus(),
+    env: process.env,
+  };
+
+  const checks = diagnose(facts);
+  for (const c of checks) {
+    process.stdout.write(`  [${ICON[c.status]}] ${c.name}: ${c.detail}\n`);
+    if (c.remedy && c.status !== 'ok') process.stdout.write(`         -> ${c.remedy}\n`);
+  }
+
+  const worst = worstStatus(checks);
+  process.stdout.write(`\n${worst === 'ok' ? 'all good' : `worst: ${worst}`}\n`);
+  if (worst === 'fail') process.exitCode = 1;
+}
+
+function purge(store: EventStore): void {
+  const n = store.purge();
+  process.stdout.write(`removed ${n} recorded session(s)\n`);
 }
 
 function show(store: EventStore, sessionId: string | undefined): void {
@@ -106,7 +173,16 @@ switch (command) {
   case 'publish':
     await publishCmd(store, arg, process.argv[4], process.argv.includes('--dry-run'));
     break;
+  case 'init':
+    init(process.argv.includes('--user') ? 'user' : 'project');
+    break;
+  case 'doctor':
+    doctor(store);
+    break;
+  case 'purge':
+    purge(store);
+    break;
   default:
-    process.stderr.write('usage: pdl <hook|show|build|publish>\n');
+    process.stderr.write('usage: pdl <hook|show|build|publish|init|doctor|purge>\n');
     process.exitCode = 2;
 }
