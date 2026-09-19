@@ -211,16 +211,16 @@ What this does *not* change: the evidence timeline is still the deterministic, 1
 
 **Bonus finding: rule 2 never fires.** `ExitPlanMode` appears **0 times across all 48 sessions**. Section 10 ranks plan-mode content as the second most reliable extraction source; on this corpus it is dead code. Either drop it down the order or note that it only applies to people who work in plan mode, which this corpus shows is nobody here.
 
-## F2. Phase 0 is not done, and the docs read as though it is
+## F2. Phase 0's two open items are the two that need live data
 
-Two checklist items are open, and the open ones are the two that need *live* data rather than transcript archaeology:
+Both remaining checklist items need observation, not transcript archaeology or doc reading:
 
-- **No hook payload has ever been captured.** `~/.local/share/pdl/raw/` contains exactly one file, `latency-test.jsonl`, from the timing run. `src/record.mjs` is registered but has never seen a real event.
+- **No real hook payload has ever been captured.** `~/.local/share/pdl/raw/` holds `latency-test.jsonl` from the timing run and `manual-probe.jsonl`, a three-field stub piped in by hand. `src/record.mjs` is registered but has never seen an event Claude Code produced.
 - **The `gh pr create` interception has never run.** `spike-splice.mjs` proves the string manipulation; nothing proves the hook fires on the right matcher, finds the PR number, and survives a real `gh pr edit`.
 
-Meanwhile `DESIGN.md` section 2.1 states the hook payload field name as settled fact. It is sourced from the hooks reference, not from observation, and `RESEARCH.md` section 3 warns in its own words that "the docs have changed field names before". The transcript-derived findings (Q2, Q3) are observations and stand; the payload-shape finding (Q1) is documentation reading wearing the same *(measured)* label.
+Q1 has since been re-answered from the raw hooks reference rather than a summarised fetch (see the correction under Q1), which is better sourcing and it removed the mandatory transcript join. It does not close this gap: the payload shape is now well documented, not observed. `RESEARCH.md` section 3 warns in its own words that "the docs have changed field names before", and the Q1 correction is itself an instance of a field name being read wrong — from the docs, twice, in opposite directions.
 
-**Action:** finish both before starting Phase 1, and mark the Q1 claims as doc-sourced until a real payload confirms them. One evening. Register `SessionStart`, `SessionEnd` and `PreCompact` in `.claude/settings.json` first — the roadmap's capture task lists nine events and the file currently has six.
+**Action:** one evening. Register `SessionStart`, `SessionEnd` and `PreCompact` in `.claude/settings.json` first — the roadmap's capture task lists nine events and the file has six — then run a real session in this repo and diff the captured payloads against DESIGN.md section 2.1.
 
 ## F3. The unanswered product question: what does the timeline add over a green CI check?
 
