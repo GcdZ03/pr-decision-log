@@ -1,26 +1,10 @@
-export type Outcome = 'pass' | 'fail' | 'interrupted' | 'unknown';
+import type {
+  CommandEvent,
+  EditEvent,
+  TimelineEvent,
+} from '../events/types.ts';
 
-export type TimelineEvent =
-  | {
-      kind: 'command';
-      id: string;
-      at: string;
-      command: string;
-      classification: 'test' | 'build' | 'lint' | 'other';
-      outcome: Outcome;
-      output?: string;
-    }
-  | {
-      kind: 'edit';
-      id: string;
-      at: string;
-      path: string;
-      assertionsBefore?: number;
-      assertionsAfter?: number;
-    };
-
-type CommandEvent = Extract<TimelineEvent, { kind: 'command' }>;
-type EditEvent = Extract<TimelineEvent, { kind: 'edit' }>;
+export type { CommandEvent, EditEvent, Outcome, TimelineEvent } from '../events/types.ts';
 
 export type Flag = {
   code: 'TEST_EDITED_AFTER_FAILURE';
