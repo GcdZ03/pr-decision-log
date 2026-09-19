@@ -58,3 +58,21 @@ test('never renders raw command output', () => {
   assert.ok(!md.includes('AKIAIOSFODNN7EXAMPLE'));
   assert.ok(!md.includes('secret-output'));
 });
+
+test('a pipe in a command is escaped so the verification table still renders', () => {
+  const markdown = render(buildLog([cmd('c1', 'npm test 2>&1 | tail -40', 'pass')], meta));
+
+  const row = markdown.split('\n').find((l) => l.includes('tail -40'));
+  assert.ok(row, 'verification row missing');
+  const delimiters = (row.match(/(?<!\\)\|/g) ?? []).length;
+  assert.equal(delimiters, 4, `row has the wrong cell count: ${row}`);
+  assert.match(row, /2>&1 \\\| tail/);
+});
+
+test('a pipe outside a table is left alone, because a list needs no escape', () => {
+  const markdown = render(buildLog([edit('e1', 'src/we|ird.ts', 2, 2)], meta));
+
+  const row = markdown.split('\n').find((l) => l.includes('ird.ts'));
+  assert.ok(row, 'changes row missing');
+  assert.ok(row.includes('src/we|ird.ts'), `a list item should not be escaped: ${row}`);
+});

@@ -13,6 +13,18 @@ const OUTCOME_LABEL: Record<string, string> = {
   pass: 'pass', fail: 'fail', interrupted: 'interrupted (cancelled)', unknown: 'unknown',
 };
 
+/**
+ * Make a value safe for a markdown table cell.
+ *
+ * A pipe inside inline code still splits the row, so a command like
+ * `npm test | tail -40` silently breaks the table on GitHub. Backticks do not
+ * protect it; only the escape does. Lists are left alone, since escaping there
+ * would render a literal backslash.
+ */
+function cell(value: string): string {
+  return value.replace(/\|/g, '\\|');
+}
+
 function timeOnly(iso: string): string {
   const m = /T(\d{2}:\d{2})/.exec(iso);
   return m?.[1] ?? iso;
@@ -47,7 +59,7 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
 
   if (log.verification.length > 0) {
     const rows = log.verification.map(
-      (v) => `| ${timeOnly(v.at)} | \`${v.command}\` | ${OUTCOME_LABEL[v.outcome] ?? v.outcome} |`,
+      (v) => `| ${timeOnly(v.at)} | \`${cell(v.command)}\` | ${OUTCOME_LABEL[v.outcome] ?? v.outcome} |`,
     );
     sections.push(`\n### Verification (recorded)\n\n| When | Command | Result |\n| --- | --- | --- |\n${rows.join('\n')}\n`);
   }

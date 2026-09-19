@@ -70,3 +70,33 @@ test('a session id that looks like a path traversal cannot escape the store', ()
     assert.throws(() => statSync(join(root, '..', '..', 'escape.jsonl')));
   });
 });
+
+test('purge removes every recorded session', () => {
+  withStore((store) => {
+    store.append('sess-1', cmd('a'));
+    store.append('sess-2', cmd('b'));
+
+    const removed = store.purge();
+
+    assert.equal(removed, 2);
+    assert.deepEqual(store.read('sess-1'), []);
+    assert.deepEqual(store.read('sess-2'), []);
+  });
+});
+
+test('purge on an empty store reports nothing removed rather than failing', () => {
+  withStore((store) => {
+    assert.equal(store.purge(), 0);
+  });
+});
+
+test('sessionCount reports how many sessions have been recorded', () => {
+  withStore((store) => {
+    assert.equal(store.sessionCount(), 0);
+    store.append('sess-1', cmd('a'));
+    store.append('sess-1', cmd('b'));
+    store.append('sess-2', cmd('c'));
+
+    assert.equal(store.sessionCount(), 2);
+  });
+});

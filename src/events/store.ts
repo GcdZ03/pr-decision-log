@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -35,6 +35,26 @@ export class EventStore {
   append(sessionId: string, event: TimelineEvent): void {
     mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
     appendFileSync(this.#fileFor(sessionId), `${JSON.stringify(event)}\n`);
+  }
+
+  /** Recorded sessions. `pdl doctor` reads this to tell dormant hooks from working ones. */
+  sessionCount(): number {
+    return this.#sessionFiles().length;
+  }
+
+  /** Delete every recorded session. The store holds command output, so this has to be one command. */
+  purge(): number {
+    const files = this.#sessionFiles();
+    for (const f of files) rmSync(join(this.#dir, f), { force: true });
+    return files.length;
+  }
+
+  #sessionFiles(): string[] {
+    try {
+      return readdirSync(this.#dir).filter((f) => f.endsWith('.jsonl'));
+    } catch {
+      return [];
+    }
   }
 
   read(sessionId: string): TimelineEvent[] {
