@@ -137,7 +137,9 @@ Entries also carry `cwd`, `version`, `timestamp`, `uuid` and `parentUuid`, so or
 
 **Correction to the `updatedInput` note.** The raw reference states that `updatedInput` **replaces the entire input object**, so unchanged fields must be echoed back. An earlier revision of these notes said omitted fields pass through, copied from the same summarised fetch that got Q1 wrong. Claude Code also evaluates permission rules and Bash auto-backgrounding against the hook's returned input, not the model's original input.
 
-**Not settled: live payload capture. Blocked on workspace trust.** `src/record.mjs` is written, registered in this repo's `.claude/settings.json` for six events, and measures 61 ms per invocation. A fresh session in the repo still captured nothing.
+**SETTLED 2026-09-19 via `-p`.** See "Live capture" below. Everything in this section is now confirmed against real payloads, archived at `test/fixtures/hook-payloads-bash.jsonl`.
+
+**Original blocker: workspace trust.** `src/record.mjs` is written, registered in this repo's `.claude/settings.json` for six events, and measures 61 ms per invocation. A fresh session in the repo still captured nothing.
 
 The cause is documented: *"Claude Code checks workspace trust before it runs any hook from a settings file. Interactive session: Claude Code holds back hooks from every settings file, including your own `~/.claude/settings.json`, until you accept the workspace trust dialog for the folder, or for a parent directory whose trust extends to it."* This repo was created by `gh repo create` minutes earlier and has never been trusted.
 
@@ -166,8 +168,8 @@ The recorder needed to answer them is not yet written. That is the next task.
 - [x] `pdl hook` raw recorder (`src/record.mjs`, 61 ms/invocation)
 - [x] Answer open questions 1-3 from the transcript corpus and hooks reference
 - [x] Idempotent splice prototype (`scripts/spike-splice.mjs`, 8/8 passing)
-- [ ] Two live sessions with the recorder registered (project-scoped, not `~/.claude/settings.json`)
-- [ ] `gh pr create` interception prototype
+- [x] Live session with the recorder registered (project-scoped); captured via `-p` to bypass the trust dialog
+- [x] `gh pr create` interception decided (post-hoc `gh pr edit`; rationale in DESIGN 2.4)
 - [x] Hook latency measurement (61 ms)
 
 ## Deviation from the plan
@@ -245,3 +247,46 @@ That list is exactly `flags[]`. So the honest conclusion is closer to **the flag
 - `README.md` says "Status: Planning (no code yet)"; there are four scripts and a recorder.
 - `test/` is empty, so `npm test` has nothing to run, while the Phase 1 CI item treats it as green.
 - Phase 1 is ~20 checklist items ending in npm publish, a plugin manifest, two publisher modes, `doctor`, `purge`, `redact-check` and a JSON schema. For evenings and weekends that is months, and the repo currently has 1,000+ lines of docs against 27 lines of product code. Suggested v0.1 cut: record -> build -> publish (`body` mode only) -> one flag. Everything else to v0.2.
+
+
+---
+
+## Live capture (Phase 0 complete)
+
+The workspace-trust block was worked around rather than waited on: `-p` sessions skip the trust dialog and treat the folder as trusted. One headless run in the repo produced real payloads.
+
+```
+claude -p "Run: echo hello-from-spike. Then run: ls /nonexistent-xyz (it will fail)." --allowedTools Bash
+```
+
+Captured: 2 `PreToolUse`, 1 `PostToolUse`, 1 `PostToolUseFailure`, 1 `UserPromptSubmit`. Archived as a test fixture.
+
+### Every documented claim, checked against reality
+
+| Claim | Verdict |
+| --- | --- |
+| Field is `tool_response`, not `tool_result` | **Confirmed.** `PostToolUse` keys include `tool_response`; `tool_result` appears nowhere |
+| Bash `tool_response` is structured | **Confirmed.** `{"stdout":"hello-from-spike","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}` |
+| `duration_ms` present | **Confirmed.** 120 ms on success, 26 ms on failure |
+| `PostToolUseFailure.error` starts with `Exit code N` | **Confirmed.** `"Exit code 1\nls: /nonexistent-xyz: No such file or directory"` |
+| `is_interrupt` present on failure | **Confirmed.** `false` |
+| Hook payloads carry no branch | **Confirmed.** No `gitBranch` or any git field in any payload, so 2.2's transcript lookup stands |
+
+One field beyond the docs: `noOutputExpected` appears in the live `tool_response` but not in the reference's example. It matches the transcript sidecar shape. Harmless, but a reminder to parse defensively.
+
+`PreToolUse` carries `tool_input` with the verbatim command and no result, as expected.
+
+### New finding: `Stop` does not fire in `-p`
+
+No `Stop` event was recorded, though the hook is registered. The reference notes `Stop` fires when Claude finishes responding and does not fire on user interrupts; a headless run evidently does not produce one either. Since the design uses `Stop` as the checkpoint that refreshes `decision-log.json` (sequence step 5), **a headless run would never checkpoint**. Do not rely on `Stop` alone: make `pdl build` idempotent and callable directly, and treat `Stop` as an optimisation rather than the only trigger. Worth re-checking in an interactive session before Phase 1 hardens this.
+
+## Phase 0 verdict: GO, premise changed, schemas verified
+
+- The evidence timeline is the product; rationale is a 3% garnish.
+- Outcome detection works entirely from hook payloads, including exit codes.
+- The transcript is needed only for `gitBranch` and assistant text.
+- The splice is idempotent and quoting-safe.
+- Publishing goes post-hoc via `gh pr edit`, not `updatedInput`.
+- Shim latency 61 ms, `async: true`, fail-open.
+
+Phase 1 may begin. First task remains the `TEST_EDITED_AFTER_FAILURE` windowing fix, since the spike's own count of it was inflated.
