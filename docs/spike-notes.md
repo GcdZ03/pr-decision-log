@@ -75,7 +75,63 @@ Swap the emphasis in `README.md` and `DESIGN.md`:
 
 Failure detection is also regex-based over tool output; `is_error` is reliable, the rest is not. Per-runner parsers are needed.
 
-## Open questions still unanswered
+## Open questions: answers
+
+Three of the four are now settled from the transcript corpus and the hooks reference. The fourth is half-settled.
+
+### Q1. What field carries tool output on `PostToolUse`? ANSWERED
+
+`tool_result`, and it is an **object**, not a string:
+
+```json
+"tool_result": { "type": "text", "text": "\u2713 All tests passed (42 tests)" }
+```
+
+Not `tool_response`. Source: the hooks reference input schema for `PostToolUse`.
+
+**The consequence is the important part.** The hook payload gives a single rendered `text` blob. The transcript's `toolUseResult` sidecar gives far more (see Q2). So the recorder cannot rely on hook payloads alone for command outcomes; it must join hook events to the transcript. That is a real architectural constraint and it is not in `DESIGN.md` yet.
+
+`PostToolUse` also has no decision model. Any non-zero exit is reported as a non-blocking error, which is the fail-open behaviour this tool wants anyway.
+
+### Q2. Do `Bash` results carry an exit code? ANSWERED: NO, but something better exists
+
+There is no numeric exit code anywhere in the transcript format. I grepped every scalar path across 40 large transcripts for `exit`, `returncode` and `status`. The only hits were `toolUseResult.status` (subagent lifecycle, not shell), `returnCodeInterpretation` (28 occurrences, all the literal string `"No matches found"`, i.e. grep-specific), and `attachment.exitCode` (13 occurrences, all `0`, and all on `hook_success` attachments, i.e. the exit code of a *hook*, not of the agent's command).
+
+What does exist, on 2,528 Bash results, is richer than expected:
+
+```json
+"toolUseResult": { "stdout": "...", "stderr": "...", "interrupted": false, "isImage": false, "noOutputExpected": false }
+```
+
+**`stdout` and `stderr` arrive separately.** That is better than the single blob the hook payload gives, and it kills the plan's assumption that failure must be sniffed from mixed output. Some variants add `gitOperation` (85) and `bashEditDiff` (24).
+
+Design consequences:
+
+- Outcome classification must still be inferred, because no exit code exists. Use `is_error` on the `tool_result` block (present on 220 of 222 sampled), non-empty `stderr`, and per-runner output parsers, in that order.
+- `interrupted: true` must be treated as a distinct outcome, not a failure. A test run the user cancelled is not a failing test run, and counting it as one would corrupt the flagship signal.
+- Prefer the transcript sidecar over the hook payload wherever both exist.
+
+### Q3. Do subagent events carry the parent session id? ANSWERED: YES, three ways
+
+1. **Path.** Subagent transcripts live at `<project>/<parent-session-id>/subagents/agent-<agentId>.jsonl`, so the parent id is in the path.
+2. **Field.** Every entry inside a subagent transcript carries the parent's `sessionId`. Verified: 222 of 222 entries in one subagent file all carry the parent id.
+3. **Marker.** `isSidechain` is `true` for subagent entries and `false` otherwise. Across 40 transcripts: 2,637 true, 12,338 false.
+
+The `Task` tool result also carries `{ agentId, status, isAsync, outputFile, resolvedModel, prompt, description }`, so a subagent hand-off can be attributed without reading the child transcript at all.
+
+**Bonus finding that simplifies Phase 1.** Every transcript entry already carries `gitBranch`, populated on 14,669 of 14,669 entries sampled. The plan called for shelling out to `git rev-parse --abbrev-ref HEAD` and caching it per session. That is unnecessary. Note that worktrees show real branch names and detached heads show `HEAD`, so handle `HEAD` as a special case rather than a branch.
+
+Entries also carry `cwd`, `version`, `timestamp`, `uuid` and `parentUuid`, so ordering and causality are reconstructable without inference.
+
+### Q4. `gh pr create` interception. HALF ANSWERED
+
+**Settled: quoting is a non-issue if you never interpolate.** `scripts/spike-splice.mjs` covers the splice with 8 tests, all passing, including a payload containing backticks, `$(whoami)`, nested double quotes, Windows backslash paths, `%` and non-ASCII. Nothing is escaped or mangled, because the body never touches a shell: write it to a file and use `gh pr edit --body-file -` on stdin. The idempotence test confirms a second identical run is a no-op via a content hash in a marker comment, and that changed content replaces in place rather than appending a second block.
+
+**Settled: `updatedInput` is viable but has a documented hazard.** The reference confirms the shape, that omitted fields pass through, and that the transcript shows both original and updated versions. The hazard, from the hooks guide: when multiple `PreToolUse` hooks return `updatedInput` for the same tool, *the last to finish wins, and because hooks run in parallel the order is non-deterministic*. Any user with another Bash-rewriting hook would silently clobber the log. That is a strong argument for the post-hoc `gh pr edit` path as the default and `updatedInput` as opt-in.
+
+**Not settled: live payload capture.** `src/record.mjs` is written and registered in this repo's `.claude/settings.json` for six events, and measures 61 ms per invocation, which is acceptable for `async: true`. It has not captured a real payload yet, because Claude Code loads hook settings at session start and this session predates the file. **Open a new Claude Code session in this repo and do any small edit; the payloads will land in `~/.local/share/pdl/raw/<session>.jsonl`.** That is the one remaining Phase 0 task, and it exists to confirm the documented schemas against reality, since the research doc notes the docs have renamed fields before.
+
+## Original open questions (superseded by the section above)
 
 These need live hook payloads, not transcript archaeology:
 
@@ -93,11 +149,12 @@ The recorder needed to answer them is not yet written. That is the next task.
 - [x] Evidence-yield measurement (`scripts/spike-evidence.mjs`)
 - [x] Confirm thinking blocks are empty
 - [x] Write up go/no-go
-- [ ] `pdl hook` raw recorder
+- [x] `pdl hook` raw recorder (`src/record.mjs`, 61 ms/invocation)
+- [x] Answer open questions 1-3 from the transcript corpus and hooks reference
+- [x] Idempotent splice prototype (`scripts/spike-splice.mjs`, 8/8 passing)
 - [ ] Two live sessions with the recorder registered (project-scoped, not `~/.claude/settings.json`)
 - [ ] `gh pr create` interception prototype
-- [ ] Idempotent splice prototype
-- [ ] Hook latency measurement
+- [x] Hook latency measurement (61 ms)
 
 ## Deviation from the plan
 
