@@ -79,21 +79,23 @@ Failure detection is also regex-based over tool output; `is_error` is reliable, 
 
 Three of the four are now settled from the transcript corpus and the hooks reference. The fourth is half-settled.
 
-### Q1. What field carries tool output on `PostToolUse`? ANSWERED
+### Q1. What field carries tool output on `PostToolUse`? ANSWERED (and my first answer was wrong)
 
-`tool_result`, and it is an **object**, not a string:
+**`tool_response`.** Its shape depends on the tool; for `Bash` it is the structured object:
 
 ```json
-"tool_result": { "type": "text", "text": "\u2713 All tests passed (42 tests)" }
+"tool_response": { "stdout": "...", "stderr": "", "interrupted": false, "isImage": false }
 ```
 
-Not `tool_response`. Source: the hooks reference input schema for `PostToolUse`.
+`PostToolUse` also carries `duration_ms`.
 
-**The consequence is the important part.** The hook payload gives a single rendered `text` blob. The transcript's `toolUseResult` sidecar gives far more (see Q2). So the recorder cannot rely on hook payloads alone for command outcomes; it must join hook events to the transcript. That is a real architectural constraint and it is not in `DESIGN.md` yet.
+> **Correction.** I first recorded this as `tool_result` holding `{type, text}`, based on a *summarised* fetch of the hooks page. Re-fetching the raw markdown (`https://code.claude.com/docs/en/hooks.md`, 330 KB) shows `tool_response` appearing 10 times and `tool_result` twice, the latter only when contrasting `PostToolBatch` against `PostToolUse`. The summariser appears to have conflated the two. **Lesson for the rest of this project: fetch the raw `.md` and grep it, do not trust a summarised doc read for a field name.**
+
+**The consequence reverses too.** Because `tool_response` for Bash is already `{stdout, stderr, interrupted, isImage}`, the hook payload is *not* poorer than the transcript for command outcomes; it is the same shape, delivered synchronously. The mandatory transcript join I proposed is unnecessary. The transcript is still read, but only for `gitBranch` (Q3) and assistant text (the low-yield narrative rules).
 
 `PostToolUse` also has no decision model. Any non-zero exit is reported as a non-blocking error, which is the fail-open behaviour this tool wants anyway.
 
-### Q2. Do `Bash` results carry an exit code? ANSWERED: NO, but something better exists
+### Q2. Do `Bash` results carry an exit code? ANSWERED: not in the transcript, but yes on the failure hook
 
 There is no numeric exit code anywhere in the transcript format. I grepped every scalar path across 40 large transcripts for `exit`, `returncode` and `status`. The only hits were `toolUseResult.status` (subagent lifecycle, not shell), `returnCodeInterpretation` (28 occurrences, all the literal string `"No matches found"`, i.e. grep-specific), and `attachment.exitCode` (13 occurrences, all `0`, and all on `hook_success` attachments, i.e. the exit code of a *hook*, not of the agent's command).
 
@@ -103,13 +105,17 @@ What does exist, on 2,528 Bash results, is richer than expected:
 "toolUseResult": { "stdout": "...", "stderr": "...", "interrupted": false, "isImage": false, "noOutputExpected": false }
 ```
 
-**`stdout` and `stderr` arrive separately.** That is better than the single blob the hook payload gives, and it kills the plan's assumption that failure must be sniffed from mixed output. Some variants add `gitOperation` (85) and `bashEditDiff` (24).
+**`stdout` and `stderr` arrive separately.** Some variants add `gitOperation` (85) and `bashEditDiff` (24).
+
+**But the exit code does exist, on `PostToolUseFailure`.** That event carries top-level `error`, `is_interrupt` and `duration_ms`, and for Bash the `error` string's **first line is `Exit code N`**. So the "no exit code" conclusion is true of the transcript and false of the hook payload. The docs warn to key on that first line only and treat the rest as display text: it is middle-truncated around a `... [N characters truncated] ...` marker and Claude Code may insert its own lines such as `Command timed out after 2m 0s`.
+
+**Interruption arrives on the success event, not the failure event.** Cancelling a running tool does not fire `PostToolUseFailure` at all; the tool result carries the interruption message instead. `is_interrupt` on the failure event means something narrower: the failure reached Claude Code as an abort rather than as an error the tool reported.
 
 Design consequences:
 
-- Outcome classification must still be inferred, because no exit code exists. Use `is_error` on the `tool_result` block (present on 220 of 222 sampled), non-empty `stderr`, and per-runner output parsers, in that order.
+- Outcome classification: `PostToolUseFailure` + leading `Exit code N` first, then `tool_response.interrupted`, then non-empty `stderr`, then per-runner output parsers.
 - `interrupted: true` must be treated as a distinct outcome, not a failure. A test run the user cancelled is not a failing test run, and counting it as one would corrupt the flagship signal.
-- Prefer the transcript sidecar over the hook payload wherever both exist.
+- Prefer the **hook payload** over the transcript for outcomes: same structure, delivered synchronously, and the transcript is written asynchronously and may lag.
 
 ### Q3. Do subagent events carry the parent session id? ANSWERED: YES, three ways
 
@@ -129,7 +135,15 @@ Entries also carry `cwd`, `version`, `timestamp`, `uuid` and `parentUuid`, so or
 
 **Settled: `updatedInput` is viable but has a documented hazard.** The reference confirms the shape, that omitted fields pass through, and that the transcript shows both original and updated versions. The hazard, from the hooks guide: when multiple `PreToolUse` hooks return `updatedInput` for the same tool, *the last to finish wins, and because hooks run in parallel the order is non-deterministic*. Any user with another Bash-rewriting hook would silently clobber the log. That is a strong argument for the post-hoc `gh pr edit` path as the default and `updatedInput` as opt-in.
 
-**Not settled: live payload capture.** `src/record.mjs` is written and registered in this repo's `.claude/settings.json` for six events, and measures 61 ms per invocation, which is acceptable for `async: true`. It has not captured a real payload yet, because Claude Code loads hook settings at session start and this session predates the file. **Open a new Claude Code session in this repo and do any small edit; the payloads will land in `~/.local/share/pdl/raw/<session>.jsonl`.** That is the one remaining Phase 0 task, and it exists to confirm the documented schemas against reality, since the research doc notes the docs have renamed fields before.
+**Correction to the `updatedInput` note.** The raw reference states that `updatedInput` **replaces the entire input object**, so unchanged fields must be echoed back. An earlier revision of these notes said omitted fields pass through, copied from the same summarised fetch that got Q1 wrong. Claude Code also evaluates permission rules and Bash auto-backgrounding against the hook's returned input, not the model's original input.
+
+**Not settled: live payload capture. Blocked on workspace trust.** `src/record.mjs` is written, registered in this repo's `.claude/settings.json` for six events, and measures 61 ms per invocation. A fresh session in the repo still captured nothing.
+
+The cause is documented: *"Claude Code checks workspace trust before it runs any hook from a settings file. Interactive session: Claude Code holds back hooks from every settings file, including your own `~/.claude/settings.json`, until you accept the workspace trust dialog for the folder, or for a parent directory whose trust extends to it."* This repo was created by `gh repo create` minutes earlier and has never been trusted.
+
+To unblock: open the repo interactively, accept the workspace trust dialog, then run `/hooks` and confirm the six events show a count. `-p` and SDK sessions skip the dialog and treat the folder as trusted, which is a useful fallback for testing but is also worth remembering as a security property of this tool's own install story.
+
+This is worth carrying into the product: `pdl init` must tell the user that hooks stay dormant until the folder is trusted, and `pdl doctor` should detect "configured but never fired" and say why rather than reporting success.
 
 ## Original open questions (superseded by the section above)
 

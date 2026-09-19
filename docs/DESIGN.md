@@ -12,7 +12,7 @@ Design for `pr-decision-log` (CLI name: `pdl`). See [ROADMAP.md](ROADMAP.md) for
 4. **Idempotent.** Re-running publish on the same state is a no-op; new commits update the same PR section.
 5. **Boring formats.** JSON on disk, Markdown on GitHub, one config file.
 6. **Never interpolate into a shell.** The rendered body reaches GitHub through a file on stdin (`gh pr edit --body-file -`), never inside a command string. This is what makes backticks, `$(...)`, quotes and backslashes safe; proven by 8 passing cases in `scripts/spike-splice.mjs` *(measured)*.
-7. **Prefer the transcript to the hook payload.** Where both carry a fact, the transcript carries more of it (section 2.1).
+7. **Prefer the hook payload to the transcript.** The payload is structured, synchronous and authoritative for tool outcomes; the transcript is written asynchronously and may lag. Read the transcript only for what the payload lacks (section 2.1).
 
 ## 2. Architecture
 
@@ -22,32 +22,46 @@ Components:
 | --- | --- | --- | --- |
 | `pdl hook` (shim) | every configured hook event | Read stdin JSON, normalise to an `Event`, append one line to the **session's** event log. No network, **no git subprocess at all** (see 2.2). | 61 ms measured; `async: true` so it never blocks |
 | Event store | always | Append-only JSONL per **session** under `~/.local/share/pdl/<repo-hash>/<session-id>.events.jsonl` (outside the repo, so nothing is ever committed by accident). Branch is resolved at build time, not write time (2.2). Index file maps session -> branch once known. | n/a |
-| Extractor | `Stop`, `pdl build` | Join events to the transcript at `transcript_path` (**required**, not optional; see 2.1) and produce a `DecisionLog`. Deterministic rules first; optional model pass behind a flag. | < 2 s |
+| Extractor | `Stop`, `pdl build` | Produce a `DecisionLog` from events; read the transcript at `transcript_path` for `gitBranch` (2.2) and assistant text (section 10), not for command outcomes (2.1). Deterministic rules first; optional model pass behind a flag. | < 2 s |
 | Redactor | before render | Strip secrets and raw tool output from anything destined for GitHub. | |
 | Renderer | `pdl build`, publish | `DecisionLog` -> Markdown between markers; also writes `decision-log.json`. | |
 | Publisher | `PreToolUse Bash(gh pr create*)`, `pdl publish` | Read-modify-write the PR body (or sticky comment) via `gh`. | network |
 | Test-change analyser (**Phase 1**, promoted) | `pdl check-tests`, publish | Correlate test-file edits with failing test runs in the timeline and with assertion weakening in the PR diff. Promoted from Phase 2 because the spike showed the timeline signal is present in 19 of 50 sessions and is the one thing no competitor can do. | < 2 s |
 
-### 2.1 The hook payload is not enough (spike finding)
+### 2.1 Outcome detection: the hook payload is sufficient
 
-`PostToolUse` delivers the tool's output as an **object**, `tool_result: { "type": "text", "text": "..." }`. The field is `tool_result`, not `tool_response`.
+> **Corrected 2026-09-19.** An earlier revision of this section claimed the field was `tool_result`, that it held a single rendered text blob, and that a transcript join was therefore mandatory. All three were wrong; they came from a summarised doc fetch. The authoritative reference (`https://code.claude.com/docs/en/hooks.md`, fetched raw) says otherwise, and the correction makes the design **simpler**, not harder.
 
-That single rendered blob is less than the transcript holds. The transcript's `toolUseResult` sidecar carries, on 2,528 Bash results *(measured)*:
+**The field is `tool_response`**, and its shape depends on the tool. For `Bash` it is the structured object, which is the same shape the transcript stores:
 
 ```json
-{ "stdout": "...", "stderr": "...", "interrupted": false, "isImage": false, "noOutputExpected": false }
+"tool_response": { "stdout": "...", "stderr": "", "interrupted": false, "isImage": false }
 ```
 
-So `stdout` and `stderr` arrive **separately**, and cancellation is explicit. Neither fact is recoverable from the hook payload alone.
+`PostToolUse` also carries `duration_ms` (execution time, excluding permission prompts and `PreToolUse` hooks), which is free timing data for the verification table.
 
-**Consequence:** the extractor must join hook events to the transcript by `tool_use_id`. The transcript read moves from optional to required, and the shim's job shrinks to "append the payload and get out of the way". Reliability of outcome detection, best first:
+**`PostToolUseFailure` is where exit codes live.** It does not reuse `tool_response`; it carries error information as top-level fields:
 
-1. `is_error` on the `tool_result` block (present on 220 of 222 sampled Bash results).
-2. `interrupted: true` from the sidecar -> outcome `interrupted`, **never** `fail`.
-3. Non-empty `stderr` from the sidecar.
-4. Per-runner output parsing ("N passed / N failed").
+```json
+{ "tool_name": "Bash", "error": "Exit code 1\nError: Cannot find module 'express'", "is_interrupt": false, "duration_ms": 4187 }
+```
 
-There is **no exit code anywhere in the format**. Every scalar path across 40 large transcripts was searched for `exit`, `returncode` and `status`; the only hits were subagent lifecycle state, a grep-specific `returnCodeInterpretation` string, and `attachment.exitCode`, which is the exit code of a *hook*, not of the agent's command *(measured)*. Any design that assumed `$?` is unavailable.
+For Bash and PowerShell, a command that ran and exited produces a **first line `Exit code N`**, followed by output with stdout and stderr interleaved. So an exit code *is* available, just only on the failure event and only as the first line of a string. The docs warn to key on `tool_name`, `is_interrupt` and that first line, and to treat the remainder as display text rather than a stable format. Long strings are middle-truncated around a `... [N characters truncated] ...` marker, and Claude Code may insert its own lines such as `Command timed out after 2m 0s`.
+
+Earlier this doc said "no exit code anywhere in the format". That holds for the **transcript** *(measured: every scalar path across 40 large transcripts searched for `exit`, `returncode`, `status`; only subagent lifecycle state, a grep-specific `returnCodeInterpretation`, and `attachment.exitCode`, which is a *hook's* exit code)*. It does not hold for the hook payload.
+
+**Interruption does not arrive where you would expect.** Cancelling a running tool does **not** fire `PostToolUseFailure`; the tool result carries the interruption message instead. So `interrupted` is read from `tool_response` on the success event, and `is_interrupt` on the failure event means something narrower: the failure reached Claude Code as an abort rather than as an error the tool reported.
+
+Outcome detection, in order:
+
+1. `PostToolUseFailure` fired -> parse a leading `Exit code N` from `error`; outcome `fail`.
+2. `PostToolUse` with `tool_response.interrupted === true` -> outcome `interrupted`, **never** `fail`.
+3. `PostToolUse` with non-empty `tool_response.stderr` -> suspect; confirm with per-runner parsing.
+4. Per-runner output parsing ("N passed / N failed") over `stdout`.
+
+**Consequence for the architecture:** the transcript join is **not** required for command outcomes. The shim gets everything it needs from the payload. Keep the transcript read for what the payload genuinely lacks: `gitBranch` (2.2) and assistant text for the low-yield narrative rules (section 10). This narrows the join rather than removing it.
+
+One shape to watch: `PostToolBatch` is different again. It passes the serialised `tool_result` content the model sees, not the structured `Output` object, so a batch handler cannot reuse the `PostToolUse` parser.
 
 ### 2.2 Branch resolution needs no git subprocess (spike finding)
 
@@ -79,7 +93,7 @@ flowchart LR
   end
   H -->|append Event| S[(events.jsonl per session)]
   S --> X[Extractor]
-  T -->|required join on tool_use_id| X
+  T -->|join for gitBranch + assistant text| X
   X --> D[DecisionLog JSON]
   D --> R[Redactor]
   R --> M[Markdown renderer]
@@ -95,13 +109,13 @@ Sequence for the happy path:
 1. `SessionStart` -> shim records `{session_id, cwd, transcript_path, model}`. No branch here; it is resolved at build time from the transcript (2.2).
 2. `UserPromptSubmit` -> shim records the prompt (truncated, redacted).
 3. `PostToolUse Edit|Write` -> shim records `{file, hunks summary}` using `tool_input` (not the file contents).
-4. `PreToolUse Bash` (async) -> shim records the command verbatim. **Classification happens at build time, not in the shim** — the shim stays dumb so a pattern-table change does not require re-recording. `PostToolUse`/`PostToolUseFailure Bash` -> records `tool_result` plus `tool_use_id` for the transcript join (2.1).
+4. `PreToolUse Bash` (async) -> shim records the command verbatim. **Classification happens at build time, not in the shim** — the shim stays dumb so a pattern-table change does not require re-recording. `PostToolUse` -> records `tool_response` (`stdout`/`stderr`/`interrupted`) plus `duration_ms`; `PostToolUseFailure` -> records `error`, `is_interrupt` and `duration_ms` (2.1).
 5. `Stop` -> shim runs the extractor over the branch's events since the last checkpoint, updates `decision-log.json`.
 6. `gh pr create` -> **decided in Phase 0: publish post-hoc, not via `updatedInput`.** Let the command run, then a `PostToolUse Bash(gh pr create*)` hook reads the new PR number and splices the section in with `gh pr edit --body-file -`.
 
    Why not `updatedInput`, despite it being documented and working? The hooks guide states that when several `PreToolUse` hooks return `updatedInput` for the same tool, *the last to finish wins, and because hooks run in parallel the order is non-deterministic*. Any user with another Bash-rewriting hook would silently clobber the log, and the failure would be intermittent and near-impossible to report. The post-hoc path has no such race: it is a read-modify-write against GitHub, guarded by a content hash.
 
-   `updatedInput` stays available behind `publish.mode: "updated_input"` for users who want the body correct on first creation and know they have no competing hook.
+   `updatedInput` stays available behind `publish.mode: "updated_input"` for users who want the body correct on first creation and know they have no competing hook. If it is used, note that **`updatedInput` replaces the entire input object**, so every unchanged field (`description`, `timeout`, and the rest of the command) must be echoed back alongside the rewritten one. An earlier revision of this doc said omitted fields pass through; that was wrong, and getting it wrong silently drops arguments. Claude Code also evaluates permission rules and Bash auto-backgrounding against the input the hook returns, not the input Claude sent.
 7. Later pushes: `pdl publish` (manually, from a git `pre-push` hook, or from a `PostToolUse Bash(git push*)` hook) re-renders and updates the same section.
 
 ### 2.4 The splice is proven (spike finding)
@@ -193,7 +207,9 @@ Field notes:
 
 - `decisions[].confidence`: `stated` (agent said it), `confirmed_by_human` (via `AskUserQuestion` or a user prompt), `inferred` (extractor heuristic, e.g. an edit reverted within the session), `model_summarised` (only if the optional LLM pass ran). Rendered with different markers so reviewers know what is fact and what is claim.
 - `source.kind`: `assistant_text | user_prompt | ask_user_question | plan | subagent | tool_sequence`.
-- `verification[].outcome`: `pass | fail | interrupted | unknown`. **No exit code exists in the transcript format** (2.1), so this is always inferred, in this order: `is_error` on the `tool_result` block, then `interrupted` from the sidecar, then non-empty `stderr`, then per-runner output parsing. Never claim `pass` without evidence.
+- `verification[].outcome`: `pass | fail | interrupted | unknown`. Resolved from hook payloads (2.1): `PostToolUseFailure` with a leading `Exit code N` in `error` -> `fail`; `tool_response.interrupted` -> `interrupted`; then stderr and per-runner parsing. Never claim `pass` without evidence.
+- `verification[].exit_code`: optional integer, parsed from the first line of `PostToolUseFailure.error` for Bash. Absent on success, since the success payload carries no exit code.
+- `verification[].duration_ms`: from the hook payload, free of charge.
 - **`interrupted` is not `fail`.** A run the user cancelled says nothing about the code. Collapsing it into `fail` would corrupt `TEST_EDITED_AFTER_FAILURE`, which is the tool's flagship signal, so the distinction is load-bearing rather than cosmetic.
 - `flags[].code` (**Phase 1**, promoted): `TEST_EDITED_AFTER_FAILURE`, `ASSERTIONS_REMOVED`, `TEST_SKIPPED`, `EXPECTATION_LOOSENED`, `TEST_DELETED`, `TEST_ONLY_CHANGE`, `NO_TEST_RUN`.
 - `sessions[].id` is the store key (2.2); `branch` is resolved from the transcript's `gitBranch`, with the literal `HEAD` treated as "detached", not as a branch.
@@ -350,7 +366,7 @@ Threat model: the transcript and hook payloads contain everything the agent saw,
 
 Controls:
 
-1. **Structural allowlist, not a blocklist.** The renderer only emits: decision text, assumption text, open items, file paths, classified command kinds (and verbatim commands only if they match `runner_patterns`), pass/fail, counts, timestamps, session ids, model names. Raw tool output (`stdout`, `stderr`, `tool_result.content`, file contents, `old_string`/`new_string`) is **never** rendered. `publish_tool_output` exists only for local `pdl show`.
+1. **Structural allowlist, not a blocklist.** The renderer only emits: decision text, assumption text, open items, file paths, classified command kinds (and verbatim commands only if they match `runner_patterns`), pass/fail, counts, timestamps, session ids, model names. Raw tool output (`tool_response.stdout`, `tool_response.stderr`, `PostToolUseFailure.error`, file contents, `old_string`/`new_string`) is **never** rendered. `publish_tool_output` exists only for local `pdl show`.
 2. **Redaction pass on the free-text fields** (decisions, assumptions, open items, prompt-derived intent), since agent text can quote a secret. Built-in patterns: GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), AWS access keys (`AKIA[0-9A-Z]{16}`) and secret keys, Google API keys (`AIza...`), Slack tokens (`xox[baprs]-`), Stripe (`sk_live_`, `sk_test_`), JWTs (`eyJ...\.eyJ...`), PEM blocks, `KEY=value` lines where KEY contains `SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE`, URLs with `user:pass@`, and high-entropy 32+ char base64/hex runs (entropy threshold configurable, default on). Replace with `[redacted:<rule>]` and count hits in `redaction.hits`.
 3. **Path deny-list** (`.env*`, `**/secrets/**`, key files) so even file names of secret-bearing files are omitted from `changes`.
 4. **Prompt text is summarised, not quoted**, beyond the first prompt (intent), which is truncated to 300 chars and redacted; prompts often contain pasted logs and credentials.
