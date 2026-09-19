@@ -5,14 +5,10 @@ import type {
 } from '../events/types.ts';
 
 export type { CommandEvent, EditEvent, Outcome, TimelineEvent } from '../events/types.ts';
+export type { Flag, FlagCode } from './types.ts';
 
-export type Flag = {
-  code: 'TEST_EDITED_AFTER_FAILURE';
-  severity: 'warn';
-  file: string;
-  detail: string;
-  evidence: string[];
-};
+import type { Flag } from './types.ts';
+
 
 const RUNNER =
   /\b(npm|pnpm|yarn|bun)\s+(run\s+)?\S|vitest|jest|pytest|go\s+test|swift\s+test|cargo\s+test|xcodebuild|node\s+--test|rspec|phpunit|dotnet\s+test|gradle|mvn\b/;

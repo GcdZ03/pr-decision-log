@@ -382,3 +382,65 @@ Every layer did its job: real hooks fired, both commands classified as `test` wi
 - Precision on a hand-labelled set. One live true positive is not a precision measurement.
 - Per-runner output parsing. Outcome currently leans on the failure event; a runner that exits 0 while reporting failures would read as `pass`.
 - The renderer, redactor and publisher. Nothing reaches a PR yet.
+
+
+---
+
+## Phase 1, tasks 4-6: redactor, renderer, publisher (done)
+
+Built test-first. **81 tests, typecheck clean.**
+
+| Module | Responsibility |
+| --- | --- |
+| `src/render/redact.ts` | Second-layer secret scrubbing for free text |
+| `src/render/relativize.ts` | Absolute path -> repo-relative |
+| `src/render/build-log.ts` | Timeline -> `DecisionLog`; enforces the structural allowlist |
+| `src/render/render.ts` | `DecisionLog` -> markdown, with budget and truncation |
+| `src/publish/splice.ts` | Idempotent insert/replace by content hash |
+| `src/publish/publish.ts` | `gh pr view` / `gh pr edit` read-modify-write |
+
+### The security properties are tests, not comments
+
+- **`buildLog` never copies `output` into the log.** A test plants an AWS-shaped key in command output and asserts the serialised log does not contain it. This is DESIGN section 9's structural allowlist, enforced mechanically.
+- **The body never becomes a shell token.** `publish` uses `spawnSync` with an argument array, and the body travels via `--body-file -` on stdin. A test plants `` `$(rm -rf /)` `` in the section and asserts it never appears in any argv entry.
+- **Absolute paths never publish.** A test asserts a path outside the repo is reduced to its basename, because publishing `/Users/<name>/...` leaks the home layout into a body that may be public.
+- **Redaction keeps context.** `API_TOKEN=secret` renders as `API_TOKEN=[redacted:secret_assignment]`, and URL credentials are stripped while host and path survive. A test asserts a 40-character git SHA is *not* redacted: high entropy alone is not a secret.
+
+### A bug the first live render caught
+
+The first end-to-end run published `/private/tmp/pdl-e2e/sum.test.js`. Two problems: it leaks the filesystem layout, and a reviewer cannot click it in the diff. macOS makes this worse, since tool payloads report `/private/tmp/...` while git reports `/tmp/...` for the same directory. `relativize()` tries both forms. Five tests cover it.
+
+### End-to-end on a real pull request
+
+A throwaway GitHub repo, a deliberately wrong assertion, a real headless session told to fix it by editing only the test, then `pdl publish`:
+
+```
+=== publish (first) ===   updated
+=== publish (second) ===  unchanged
+```
+
+The resulting body preserved the author's own text and appended:
+
+```markdown
+### Flags
+- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at ..., after `npm test 2>&1`
+  failed at ... and before it passed again; assertion count 2 -> 1.
+
+### Verification (recorded)
+| When | Command | Result |
+| 05:01 | `npm test 2>&1` | fail |
+| 05:01 | `npm test 2>&1` | pass |
+```
+
+Idempotence held against the live GitHub API: the second publish was a true no-op via the content hash, so repeated pushes will not spam the PR.
+
+**Phase 1's core loop is complete**: hooks -> events -> flags -> markdown -> PR.
+
+### Still owed for the Phase 1 definition of done
+
+- `pdl init` and `pdl doctor`, including the workspace-trust warning (hooks stay dormant until the folder is trusted).
+- Auto-publish on `gh pr create` via a `PostToolUse` hook; today publishing is manual.
+- Per-runner output parsing; a runner that exits 0 while reporting failures still reads as `pass`.
+- Multi-session merge for one branch.
+- Precision on a hand-labelled set before anyone else sees the flag.
+- Ten consecutive real PRs carrying a log that was not hand-edited.
