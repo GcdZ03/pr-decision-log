@@ -4,7 +4,7 @@ Date: 2026-09-19
 Machine: Apple M5, Node v26.3.1, macOS 25.6.0
 Corpus: 171 local Claude Code transcripts in `~/.claude/projects`; measurements run over the 80 largest (>20 KB), of which 50 contained file edits.
 
-Reproduce with `npm run spike:yield` and `node scripts/spike-evidence.mjs 80`.
+Reproduce with `npm run spike:yield`, `npm run spike:evidence`, `npm run spike:summary` and `npm run spike:splice`.
 
 ## Verdict: GO, with a changed premise
 
@@ -159,3 +159,75 @@ The recorder needed to answer them is not yet written. That is the next task.
 ## Deviation from the plan
 
 `ROADMAP.md` Phase 0 says to register the recorder in `~/.claude/settings.json`. That is global and would fire on every unrelated session on this machine. Register in this repo's `.claude/settings.json` instead, and only widen if the spike needs cross-repo data.
+
+---
+
+# Follow-up review (2026-09-19, after the design rewrite)
+
+A second pass over this spike, the revised `DESIGN.md` and the corpus. Three findings, ordered by how much they should change the plan. Numbers below come from `npm run spike:summary` (`scripts/spike-summary-yield.mjs`), run over the same 80-transcript corpus.
+
+## F1. The premise was falsified by a probe that only looked in one place
+
+`spike-yield.mjs` measures **rule 3** of `DESIGN.md` section 10: assistant text in the few stream entries *immediately preceding* an edit. 3.0% is a sound measurement of that rule. But **rule 4** (`last_assistant_message` on `Stop`) was never measured, and the design was rewritten as though it had been.
+
+Rule 4's territory, same corpus, same cue set:
+
+| measure | rule 3 (pre-edit) | rule 4 (turn-final) |
+| --- | --- | --- |
+| candidate messages | 862 edits | 227 turn-final messages |
+| containing a rationale cue | 26 (3.0%) | **139 (61.2%)** |
+| sessions with >= 1 hit | **1 / 47** | **31 / 48 (64.6%)** |
+
+Also measured: 161 of 231 assistant text blocks >= 400 chars carry a cue (69.7%).
+
+(The corpus is live — it grows with every session on this machine, including the one that produced these notes — so re-runs drift by a point or two. Snapshot the corpus before any number goes in the README.)
+
+**Read these as an upper bound, not a yield.** A cue in the sentence before an edit is strong evidence of a stated choice; a `because` somewhere in 2 KB of wrap-up prose is weak. The true rate after hand-labelling will be well below 61%. But it will not be 3%, and the gap at session level is roughly 20x.
+
+The behavioural explanation fits: **the agent justifies its work in the wrap-up, not before each edit.** It narrates while working and explains when reporting. Rule 3 samples the narration; rule 4 samples the explanation.
+
+What this does *not* change: the evidence timeline is still the deterministic, 100%-coverage part, and it should still lead. What it does change is the overclaiming that came with the rewrite:
+
+- Principle 1's "a decisions section that renders empty on most PRs is the expected case" is probably **wrong**. Expect it to render on the majority.
+- Non-goal "not a window into the agent's reasoning ... rationale precedes 3% of edits" generalises a narrow probe to the whole tool.
+- Section 10's "expect this to yield nothing on most PRs" is correct **for rule 3 only** and should say so.
+- The SessionStart elicitation argument ("yield is low, so it is now the only lever") rests on the 3% figure. If rule 4 lands anywhere near even 25% after labelling, elicitation is unnecessary and should stay off permanently, which is the better outcome anyway given arXiv 2601.04886.
+
+**Action before Phase 1:** hand-label the 139 turn-final hits as genuine decision / assumption / open item / noise. That gives a real rule-4 yield, and it is a couple of hours. Rewrite the four passages above from whatever it says.
+
+**Bonus finding: rule 2 never fires.** `ExitPlanMode` appears **0 times across all 48 sessions**. Section 10 ranks plan-mode content as the second most reliable extraction source; on this corpus it is dead code. Either drop it down the order or note that it only applies to people who work in plan mode, which this corpus shows is nobody here.
+
+## F2. Phase 0 is not done, and the docs read as though it is
+
+Two checklist items are open, and the open ones are the two that need *live* data rather than transcript archaeology:
+
+- **No hook payload has ever been captured.** `~/.local/share/pdl/raw/` contains exactly one file, `latency-test.jsonl`, from the timing run. `src/record.mjs` is registered but has never seen a real event.
+- **The `gh pr create` interception has never run.** `spike-splice.mjs` proves the string manipulation; nothing proves the hook fires on the right matcher, finds the PR number, and survives a real `gh pr edit`.
+
+Meanwhile `DESIGN.md` section 2.1 states the hook payload field name as settled fact. It is sourced from the hooks reference, not from observation, and `RESEARCH.md` section 3 warns in its own words that "the docs have changed field names before". The transcript-derived findings (Q2, Q3) are observations and stand; the payload-shape finding (Q1) is documentation reading wearing the same *(measured)* label.
+
+**Action:** finish both before starting Phase 1, and mark the Q1 claims as doc-sourced until a real payload confirms them. One evening. Register `SessionStart`, `SessionEnd` and `PreCompact` in `.claude/settings.json` first — the roadmap's capture task lists nine events and the file currently has six.
+
+## F3. The unanswered product question: what does the timeline add over a green CI check?
+
+The revised principle 1 says evidence is the product and narrative is a garnish. But a reviewer looking at the PR already has the diff and the checks. A Verification table saying `npm test` passed at 09:41 duplicates a green check mark, and a Changes list duplicates the diff stat. Rendering both on every PR is noise, and noise on every PR is how a tool gets uninstalled.
+
+What CI genuinely **cannot** show, because the fact exists only in the session timeline:
+
+- a test file edited inside the window between a failing run and the next green one;
+- tests never run at all before the PR was opened;
+- a test run the user cancelled (`interrupted`), which looks like nothing in CI;
+- an edit made and reverted within the session.
+
+That list is exactly `flags[]`. So the honest conclusion is closer to **the flags are the product and the timeline is the substrate that makes them provable** — which is not quite what the rewrite says. Concretely:
+
+- Render **Flags** first and always; fold **Verification** and **Changes** into a `<details>` block by default, with a config key to expand them. A log that is three lines on a clean PR and loud on a suspicious one is one a reviewer will keep.
+- This strengthens the case for promoting the test-change analyser to Phase 1, but for a different reason than the roadmap gives: not because 38% of sessions have the signal, but because without the flags there is no reason for the section to exist.
+
+**Corollary on the flagship signal.** The latching caveat above already says 78 is over-counted. After windowing on the next green run, requiring the failure output to name the test, and excluding additive edits, the real session rate could plausibly fall from 38% to single digits. Hand-label 20 sessions *before* committing the analyser to the MVP. If it lands near 5% it is still the right differentiator and a great demo, but the MVP then has to be worth installing for the other 95% of PRs — and F3 says that means flags like `NO_TEST_RUN`, not a verification table.
+
+## Smaller things
+
+- `README.md` says "Status: Planning (no code yet)"; there are four scripts and a recorder.
+- `test/` is empty, so `npm test` has nothing to run, while the Phase 1 CI item treats it as green.
+- Phase 1 is ~20 checklist items ending in npm publish, a plugin manifest, two publisher modes, `doctor`, `purge`, `redact-check` and a JSON schema. For evenings and weekends that is months, and the repo currently has 1,000+ lines of docs against 27 lines of product code. Suggested v0.1 cut: record -> build -> publish (`body` mode only) -> one flag. Everything else to v0.2.
