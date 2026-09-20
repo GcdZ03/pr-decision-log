@@ -26,4 +26,3 @@ __pycache__/
 .claude/settings.local.json
 
 # Installed by Phase 1
-package-lock.json
