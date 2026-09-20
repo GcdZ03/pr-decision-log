@@ -89,8 +89,29 @@ node dist/pdl.js doctor    # confirms they are actually firing
 | `pdl build <session>` | Render the log to stdout |
 | `pdl publish <session> <pr>` | Publish to a pull request by hand |
 | `pdl purge` | Delete every recorded session |
+| `pdl redact-check [file]` | Run text through the redactor and report what matched |
 
 Set `PDL_DISABLE=1` to turn recording off entirely.
+
+### Install as a Claude Code plugin
+
+The repository is also a plugin, so the hooks can be installed without editing any settings file. `.claude-plugin/plugin.json` and `hooks/hooks.json` register the same six events `pdl init` writes, resolved through `${CLAUDE_PLUGIN_ROOT}`. A test asserts the two stay in step, because a plugin that registers a different set than `init` would be a silent difference between two installs of the same tool.
+
+## Configuration
+
+Optional. `pdl.config.json` at the repo root is the team's shared policy; `~/.config/pdl/config.json` holds personal defaults. Repo beats user beats built-in, so a personal file cannot quietly weaken what a repository asks for.
+
+```json
+{
+  "publish": { "mode": "comment", "max_chars": 12000 },
+  "redaction": { "extra_patterns": ["INTERNAL-[A-Z0-9]{8}"] },
+  "store": { "dir": "~/.local/share/pdl" }
+}
+```
+
+`mode: "comment"` publishes a sticky pull request comment instead of editing the body. It finds its own comment by marker and edits it by id — never `gh pr comment --edit-last`, which edits whatever you most recently wrote and would overwrite a review note typed between two publishes.
+
+A rejected setting never throws: it is ignored, the default applies, and `pdl doctor` names it. Silently applying a default for a typo is how a tool looks like it ignored your config.
 
 ## How it works
 

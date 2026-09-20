@@ -24,22 +24,22 @@ Goal: you use it on every PR you open, and it never gets in the way.
 Core:
 - [x] `Event` type and store: normalise the nine hook events into `{ts, session, branch, kind, ...}` and append per repo+branch; branch resolved via `git rev-parse --abbrev-ref HEAD` cached per session.
 - [x] Command classifier: `runner_patterns` table -> `test | build | lint | git | other`; outcome from `PostToolUseFailure`, stderr heuristics, or a small per-runner "N passed / N failed" regex set (vitest, jest, pytest, go test, swift test, xcodebuild).
-- [ ] Extractor rules 1-5 from DESIGN.md section 10 (deterministic only). Unit tests with fixture payloads captured in Phase 0 (scrubbed).
+- [~] Extractor rules 1 and 3 built and measured; rule 2 deferred (no real `ExitPlanMode` sample exists); rules 4-5 partly covered by the evidence timeline.
 - [x] Redactor with the built-in pattern set plus entropy check; `pdl redact-check`; unit tests including known false negatives documented.
 - [x] Renderer to the markdown template; byte budget with truncation note; `decision-log.json` written next to the events file.
 - [x] Publisher mode `body`: read-modify-write between markers via `gh pr view --json` and `gh pr edit --body-file -`; hash-based no-op; never exit non-zero.
-- [ ] Publisher mode `comment`: find comment containing marker via `gh api repos/{owner}/{repo}/issues/{n}/comments`, `PATCH` by id; create if absent. Do not rely on `--edit-last`.
+- [x] Publisher mode `comment`: find comment containing marker via `gh api repos/{owner}/{repo}/issues/{n}/comments`, `PATCH` by id; create if absent. Do not rely on `--edit-last`.
 - [x] Auto-publish on `gh pr create` and on `Stop`. Phase 0 chose post-hoc editing over a `PreToolUse` rewrite of `--body`, because parallel hooks rewriting the same tool input resolve in non-deterministic order. The PR number is re-derived from the branch rather than persisted, so it cannot go stale across a resume or rebase.
 - [x] `pdl init` (writes `.claude/settings.json` or `~/.claude/settings.json`), `pdl doctor`, `pdl show`, `pdl purge`, `PDL_DISABLE`.
-- [ ] Claude Code plugin manifest (`hooks/hooks.json`) so install is one command; keep `pdl init` as fallback.
-- [ ] Config loading: repo `pdl.config.json` over user config over defaults; JSON schema file for editor completion.
+- [x] Claude Code plugin manifest (`hooks/hooks.json`) so install is one command; keep `pdl init` as fallback.
+- [x] Config loading: repo `pdl.config.json` over user config over defaults; JSON schema file for editor completion.
 - [ ] If Phase 0 showed low yield: SessionStart hook prints one line of context asking the agent to prefix non-trivial choices with `Decision:` (make it configurable and off by default if yield was fine).
 
 Quality:
 - [x] `node:test` suite: redactor, renderer, splice, classifier, store, publisher; fixtures from real sessions. Extractor still missing, since the extractor itself is not built.
 - [ ] Integration test that runs `pdl hook` against 9 recorded payloads and asserts the store contents.
-- [ ] CI on GitHub Actions: typecheck, test, bundle, and a "dogfood" job that runs `pdl build` on a fixture and diffs against a golden markdown.
-- [ ] README: install, 60-second demo, what is and is not published, known gaps (thinking not available; regex redaction limits).
+- [x] CI on GitHub Actions: typecheck, test, bundle, and a "dogfood" job that runs `pdl build` on a fixture and diffs against a golden markdown.
+- [x] README: install, 60-second demo, what is and is not published, known gaps (thinking not available; regex redaction limits).
 
 Definition of done: 10 consecutive PRs on your own repos carry a log that you did not hand-edit; zero hook-caused agent interruptions in that period; `pdl doctor` green on a fresh clone; `npm test` green in CI; published as `v0.1.0` on npm and installable as a Claude Code plugin.
 

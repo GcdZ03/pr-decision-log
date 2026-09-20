@@ -79,3 +79,46 @@ test('auto-publish is skipped by the kill switch', async () => {
   assert.equal(result.status, 'skipped');
   assert.equal(called, false, 'gh was invoked while disabled');
 });
+
+test('comment mode routes to the comment publisher instead of the body', async () => {
+  const calls: string[][] = [];
+  const gh = async (args: string[]): Promise<GhResult> => {
+    calls.push(args);
+    if (args[1] === 'view' && args.includes('number')) return ok('{"number":7}');
+    if (args[0] === 'api' && args.includes('--paginate')) return ok('[]');
+    if (args[1] === 'view' && args.includes('nameWithOwner')) return ok('{"nameWithOwner":"o/r"}');
+    return ok('');
+  };
+
+  const result = await autoPublish({ section: '<!-- pdl:start v=1 -->\nx\n<!-- pdl:end -->\n', gh, mode: 'comment' });
+
+  assert.equal(result.status, 'updated');
+  assert.ok(calls.some((a) => a[0] === 'api'), 'never used the comments API');
+  assert.ok(!calls.some((a) => a[1] === 'edit'), 'edited the PR body in comment mode');
+});
+
+test('comment mode skips when the repository cannot be resolved', async () => {
+  const gh = async (args: string[]): Promise<GhResult> => {
+    if (args[1] === 'view' && args.includes('number')) return ok('{"number":7}');
+    if (args[1] === 'view' && args.includes('nameWithOwner')) return fail('not a repository');
+    return ok('');
+  };
+
+  const result = await autoPublish({ section: 'x', gh, mode: 'comment' });
+
+  assert.equal(result.status, 'skipped');
+});
+
+test('body mode remains the default when no mode is given', async () => {
+  const calls: string[][] = [];
+  const gh = async (args: string[]): Promise<GhResult> => {
+    calls.push(args);
+    if (args[1] === 'view' && args.includes('number')) return ok('{"number":7}');
+    if (args[1] === 'view') return ok('{"body":""}');
+    return ok('');
+  };
+
+  await autoPublish({ section: 'x', gh });
+
+  assert.ok(calls.some((a) => a[1] === 'edit'), 'did not edit the PR body by default');
+});

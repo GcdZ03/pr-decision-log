@@ -16,7 +16,10 @@ import {
   ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, writeSettings,
   type Scope,
 } from './doctor/settings.ts';
+import { loadConfig } from './config/config.ts';
+import { redact } from './render/redact.ts';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 function git(args: string[]): string {
   const p = spawnSync('git', args, { encoding: 'utf8' });
@@ -84,7 +87,7 @@ async function hook(store: EventStore): Promise<void> {
     const created = event ? detectPrCreation(event) !== null : false;
     const stopped = payload['hook_event_name'] === 'Stop';
     if (sessionId && (created || stopped)) {
-      await autoPublish({ section: render(logFor(store, sessionId)) });
+      await autoPublish({ section: render(logFor(store, sessionId)), mode: config.publish.mode });
     }
   } catch {
     // Fail open: a malformed payload must never break the agent loop.
@@ -122,6 +125,7 @@ function doctor(store: EventStore): void {
     recordedSessions: store.sessionCount(),
     gh: ghStatus(),
     env: process.env,
+    configProblems: config.problems,
   };
 
   const checks = diagnose(facts);
@@ -133,6 +137,26 @@ function doctor(store: EventStore): void {
   const worst = worstStatus(checks);
   process.stdout.write(`\n${worst === 'ok' ? 'all good' : `worst: ${worst}`}\n`);
   if (worst === 'fail') process.exitCode = 1;
+}
+
+/**
+ * Run text through the redactor and report what it caught.
+ *
+ * The point is to make redaction inspectable before trusting it: paste a real
+ * log line in and see whether the pattern set actually fires. A silent miss is
+ * the failure mode that matters, and it is invisible without this.
+ */
+async function redactCheck(file: string | undefined): Promise<void> {
+  const input = file ? readFileSync(file, 'utf8') : await readStdin();
+  const { text, hits } = redact(input);
+
+  process.stdout.write(text.endsWith('\n') ? text : `${text}\n`);
+  process.stderr.write(
+    hits.length === 0
+      ? '\nno redaction rules matched\n'
+      : `\n${hits.length} rule(s) matched: ${[...new Set(hits)].join(', ')}\n`,
+  );
+  if (hits.length > 0) process.exitCode = 1;
 }
 
 function purge(store: EventStore): void {
@@ -165,7 +189,10 @@ function show(store: EventStore, sessionId: string | undefined): void {
   for (const f of flags) process.stdout.write(`  - ${f.code} ${f.file}\n      ${f.detail}\n`);
 }
 
-const store = new EventStore(process.env['PDL_HOME']);
+const config = loadConfig(repoRoot());
+// PDL_HOME beats the config file: it is how a test or a one-off run isolates
+// the store without editing anyone's settings.
+const store = new EventStore(process.env['PDL_HOME'] ?? config.store.dir);
 const [command, arg] = process.argv.slice(2);
 
 switch (command) {
@@ -190,7 +217,10 @@ switch (command) {
   case 'purge':
     purge(store);
     break;
+  case 'redact-check':
+    await redactCheck(arg);
+    break;
   default:
-    process.stderr.write('usage: pdl <hook|show|build|publish|init|doctor|purge>\n');
+    process.stderr.write('usage: pdl <hook|show|build|publish|init|doctor|purge|redact-check>\n');
     process.exitCode = 2;
 }
