@@ -8,6 +8,9 @@ import { publish } from './publish/publish.ts';
 import { autoPublish } from './publish/auto-publish.ts';
 import { detectPrCreation } from './publish/detect-pr.ts';
 import { diagnose, worstStatus, type Facts } from './doctor/diagnose.ts';
+import { readTranscript } from './extract/transcript.ts';
+import { extractDecisions } from './extract/decisions.ts';
+import { findTranscript } from './extract/find-transcript.ts';
 import { mergeHooks, pdlHookEvents } from './doctor/init.ts';
 import {
   ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, writeSettings,
@@ -20,6 +23,11 @@ function git(args: string[]): string {
   return p.status === 0 ? (p.stdout ?? '').trim() : '';
 }
 
+function decisionsFor(sessionId: string) {
+  const path = findTranscript(sessionId);
+  return path ? extractDecisions(readTranscript(path)) : [];
+}
+
 function logFor(store: EventStore, sessionId: string) {
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   return buildLog(store.read(sessionId), {
@@ -27,7 +35,7 @@ function logFor(store: EventStore, sessionId: string) {
     branch: branch === 'HEAD' ? 'detached' : branch,
     headSha: git(['rev-parse', '--short', 'HEAD']),
     repoRoot: git(['rev-parse', '--show-toplevel']) || process.cwd(),
-  });
+  }, decisionsFor(sessionId));
 }
 
 function build(store: EventStore, sessionId: string | undefined): void {
