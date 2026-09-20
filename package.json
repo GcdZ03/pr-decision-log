@@ -4,9 +4,17 @@
   "description": "Attach a structured decision log from an AI coding agent session to a pull request.",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=22" },
-  "bin": { "pdl": "./dist/pdl.js" },
-  "files": ["dist"],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "pdl": "./dist/pdl.js"
+  },
+  "files": [
+    "dist",
+    ".claude-plugin",
+    "hooks"
+  ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",

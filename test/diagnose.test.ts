@@ -9,6 +9,7 @@ const healthy: Facts = {
   recordedSessions: 3,
   gh: 'ok',
   env: {},
+  configProblems: [],
 };
 
 const find = (facts: Facts, name: string) => {
@@ -85,4 +86,22 @@ test('worstStatus reports the most severe status present', () => {
   assert.equal(worstStatus([{ name: 'a', status: 'ok', detail: '' }, { name: 'b', status: 'warn', detail: '' }]), 'warn');
   assert.equal(worstStatus([{ name: 'a', status: 'warn', detail: '' }, { name: 'b', status: 'fail', detail: '' }]), 'fail');
   assert.equal(worstStatus([{ name: 'a', status: 'skip', detail: '' }]), 'ok');
+});
+
+test('a clean config reports ok', () => {
+  assert.equal(find(healthy, 'config').status, 'ok');
+});
+
+test('a rejected config setting is surfaced rather than silently ignored', () => {
+  const check = find({ ...healthy, configProblems: ['publish.mode: expected one of body, comment'] }, 'config');
+
+  assert.equal(check.status, 'warn');
+  assert.match(check.detail, /publish\.mode/);
+});
+
+test('several config problems are all named', () => {
+  const check = find({ ...healthy, configProblems: ['a: bad', 'b: worse'] }, 'config');
+
+  assert.match(check.detail, /a: bad/);
+  assert.match(check.detail, /b: worse/);
 });

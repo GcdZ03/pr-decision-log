@@ -17,6 +17,8 @@ export interface Facts {
   recordedSessions: number;
   gh: 'ok' | 'missing' | 'unauthenticated';
   env: NodeJS.ProcessEnv;
+  /** Settings the config loader refused. Empty on a clean config. */
+  configProblems: string[];
 }
 
 const MIN_NODE_MAJOR = 22;
@@ -137,6 +139,28 @@ function ghCheck(facts: Facts): Check {
   }
 }
 
+/**
+ * The config loader never throws, so a typo would otherwise apply silently as
+ * a default and the tool would look like it ignored the setting.
+ */
+function configCheck(facts: Facts): Check {
+  return facts.configProblems.length === 0
+    ? { name: 'config', status: 'ok', detail: 'no problems' }
+    : {
+        name: 'config',
+        status: 'warn',
+        detail: facts.configProblems.join('; '),
+        remedy: 'Fix or remove these settings; defaults are in use for them.',
+      };
+}
+
 export function diagnose(facts: Facts): Check[] {
-  return [nodeCheck(facts), registeredCheck(facts), firingCheck(facts), killSwitchCheck(facts), ghCheck(facts)];
+  return [
+    nodeCheck(facts),
+    registeredCheck(facts),
+    firingCheck(facts),
+    configCheck(facts),
+    killSwitchCheck(facts),
+    ghCheck(facts),
+  ];
 }
