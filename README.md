@@ -1,37 +1,153 @@
 # pr-decision-log
 
-**Status: Planning** (no code yet; see [docs/ROADMAP.md](docs/ROADMAP.md))
+[![CI](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml/badge.svg)](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml)
 
-`pr-decision-log` captures what an AI coding agent decided while it worked (Claude Code first, Cursor and Copilot CLI later) and attaches a structured, redacted **decision log** to the resulting pull request. The reviewer gets the agent's intent, the alternatives it rejected, the assumptions it made, what it verified and how, and a flag on any test it edited after a failing run, instead of being, in Addy Osmani's words, "the first human being to ever lay eyes on this code."
+**Status: working, Phase 1 in progress.** Dogfooded on this repository's own pull requests.
 
-## The problem
+`pdl` records what an AI coding agent actually did while it worked, and attaches a structured, redacted **decision log** to the resulting pull request. The reviewer gets what ran, what failed, what was edited after what, and a flag on any test that was changed right after that test failed — instead of being, in Addy Osmani's words, "the first human being to ever lay eyes on this code."
 
-- **AI PRs sit in the queue.** LinearB's 2026 benchmarks (8.1M PRs, 4,800+ orgs) found AI-generated PRs wait **4.6x longer** for a first review, agentic PRs **5.3x**, and are accepted **32.7%** of the time vs **84.4%** for manual PRs; once picked up they are reviewed about 2x faster, so the cost is trust and triage, not reading. ([source](https://linearb.io/resources/software-engineering-benchmarks-report))
-- **Review is the bottleneck, not generation.** Faros AI (10,000+ developers, 1,255 teams): high-AI-adoption teams merge **98% more PRs**, but PR review time rises **91%** and PR size **154%**. ([source](https://www.faros.ai/blog/ai-software-engineering)) Opsera's 2026 benchmark (250k+ developers) reports the same 4.6x wait alongside 48-58% faster time-to-PR. ([source](https://opsera.ai/newsroom/new-opsera-report-reveals-how-ai-is-transforming-software-delivery-and-driving-business-outcomes/))
-- **Agent descriptions are not trustworthy on their own.** In a study of 23,247 agent-authored PRs, descriptions that claimed unimplemented changes were the most common inconsistency; inconsistent PRs were accepted 28.3% vs 80.0% and took 3.5x longer to merge. ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886))
-- **Agent-written tests often verify nothing.** 80.2% of 86,156 agent-authored test patches had weak or no explicit assertions. ([arXiv 2606.18168](https://arxiv.org/abs/2606.18168)) Osmani's recommendations include requiring decision logs of agent reasoning and giving test changes heightened scrutiny. ([source](https://addyosmani.com/blog/agentic-code-review/))
-- **The reasoning is thrown away.** Claude Code writes a full JSONL transcript per session, but nothing carries it to the PR. Worse, the transcript's `thinking` blocks are stored empty (1,256 of 1,260 on this machine), so the log has to be built from visible agent text, tool calls, user prompts and explicit elicitation, not from hidden chain-of-thought. See [docs/RESEARCH.md](docs/RESEARCH.md#transcript-jsonl-format).
+It installs as Claude Code hooks and publishes on its own. There is no step you have to remember.
 
-## What it will do (MVP)
+## What a published log looks like
 
-- Install as Claude Code hooks (`PreToolUse`, `PostToolUse`, `Stop`) with one command; zero manual settings edits.
-- Record a compact, local event timeline per git branch: prompts, files edited, commands run, test runs and their pass/fail, subagent hand-offs, questions asked of the human.
-- Extract **decisions** from the timeline: agent statements of rationale before edits, rejected alternatives, assumptions, plan-mode plans, `AskUserQuestion` answers, and things explicitly left undone.
-- Intercept `gh pr create` and render the log into the PR body between hidden markers; re-render idempotently on later pushes (`pdl publish`) so there is one log, not five.
-- Redact before anything leaves the machine: secret patterns, env dumps, raw tool output. Publish structured decisions, never the transcript.
-- Emit a `decision-log.json` (versioned schema) alongside the markdown so other tools can consume it.
+This is real output, from this repository's PR #3:
 
-Stretch (Phase 2): flag tests edited after a failing test run in the same session, and assertion weakening in the PR diff (`.skip`, removed `expect`, loosened literals) next to changes in the code under test.
+```markdown
+## Decision log
+
+*Recorded automatically from the agent session on `phase1-install-autopublish`.
+Everything below is observed from tool events, not the model's self-report.*
+
+### Flags
+- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited after `npm test` failed and
+  before it passed again; assertion count 1 -> 0.
+
+### Verification (recorded)
+| When | Command | Result |
+| --- | --- | --- |
+| 06:26 | `npm test 2>&1 \| tail -40` | pass |
+
+### Decisions
+- Rather than persisting the PR number, I'll re-derive it from the current
+  branch, which removes a state file entirely. *(stated)*
+- Integration: Merge to main locally *(confirmed by a human)*
+```
+
+## The finding that shaped it
+
+The original pitch was "capture the agent's reasoning." **Measurement killed that**, and the tool is better for it.
+
+Measured over 50 real Claude Code sessions on this machine:
+
+| Question | Answer |
+| --- | --- |
+| Is hidden reasoning recoverable? | **No.** 2,170 of 2,176 `thinking` blocks are stored empty. |
+| Does the agent explain *why* before editing? | **Rarely.** 26 of 881 edits (3%), median 0 per session. |
+| Is the evidence timeline there? | **Yes.** Commands 50/50 sessions, test runs 48/50. |
+
+So the product leads with evidence, and an empty Decisions section is the expected case rather than a bug. A tool that promised "the agent's reasoning" would have shipped an empty section on 49 of 50 pull requests.
+
+A second measurement, over 23 sessions, revised it again: the single richest source of genuine decisions is not the agent's prose at all, but **questions the human answered** — 98 of them, each one a point where a person actually committed to something.
+
+## What gets published, and what does not
+
+| Published | Never published |
+| --- | --- |
+| Command *kind* and the runner fragment | Raw command lines |
+| Pass / fail / interrupted | Raw stdout or stderr |
+| Repo-relative file paths | Absolute paths |
+| Assertion counts before and after | File contents or diffs |
+| Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
+
+Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
+
+## Install
+
+```bash
+npm install && npm run build
+node dist/pdl.js init      # registers six hooks in .claude/settings.json
+node dist/pdl.js doctor    # confirms they are actually firing
+```
+
+`init` is idempotent, preserves other tools' hooks, and adopts a hand-written `pdl` hook instead of adding a second copy beside it.
+
+**Hooks stay dormant until you trust the folder.** Claude Code holds back hooks from every settings file, including your own global one, until you accept the trust dialog for that directory. A registered-but-dormant install is indistinguishable from a working one if you only read the config, so `doctor` checks whether anything has *ever* been recorded and says so:
+
+```
+[ok  ] hooks registered: 6 events in .claude/settings.json
+[warn] hooks firing: hooks are registered but no session has ever been recorded
+       -> Claude Code keeps hooks dormant until the folder is trusted.
+```
+
+## Commands
+
+| Command | Does |
+| --- | --- |
+| `pdl doctor` | Five checks on the install, with a remedy for each failure |
+| `pdl init [--user]` | Register hooks in project or user settings |
+| `pdl show <session>` | Print the recorded timeline |
+| `pdl build <session>` | Render the log to stdout |
+| `pdl publish <session> <pr>` | Publish to a pull request by hand |
+| `pdl purge` | Delete every recorded session |
+
+Set `PDL_DISABLE=1` to turn recording off entirely.
+
+## How it works
+
+```
+Claude Code hooks -> events (JSONL, outside the repo)
+                              |
+        transcript ----> extractor (decisions, assumptions, open items)
+                              |
+                     log builder (structural allowlist + redaction)
+                              |
+                       renderer -> idempotent splice into the PR body
+```
+
+Publishing is a **post-hoc edit** of the PR body, not a rewrite of `gh pr create --body`. Two hooks rewriting the same tool input resolve in non-deterministic order, so anyone running another input-rewriting hook would lose their log intermittently — a failure that is close to unreportable. The PR number is re-derived from the current branch rather than stored, so nothing goes stale across a resume or a rebase.
+
+Repeated publishes are a no-op: the section carries a content hash, and an unchanged log is not rewritten.
+
+## Limitations, honestly
+
+- **The Decisions section is usually empty.** That is the measured reality, not a defect. It is suppressed rather than rendered as "none recorded".
+- **Stated decisions run about two useful items in three.** The agent's prose uses rationale words rhetorically ("verify X rather than guess"). A narration filter removes most of it; the `(stated)` label carries the rest.
+- **Plan-mode extraction is not implemented.** Zero `ExitPlanMode` uses exist across 170+ transcripts here, so there is no sample to build against. Guessing at the schema is how the spike got three things wrong once already.
+- **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.
+- **Claude Code only.** Cursor and Copilot CLI adapters are Phase 3.
+
+## The problem, with evidence
+
+- **AI PRs sit in the queue.** LinearB's 2026 benchmarks (8.1M PRs, 4,800+ orgs) found AI-generated PRs wait **4.6x longer** for a first review, agentic PRs **5.3x**, and are accepted **32.7%** of the time vs **84.4%** for manual PRs. ([source](https://linearb.io/resources/software-engineering-benchmarks-report))
+- **Review is the bottleneck, not generation.** Faros AI (10,000+ developers, 1,255 teams): high-AI-adoption teams merge **98% more PRs**, but PR review time rises **91%** and PR size **154%**. ([source](https://www.faros.ai/blog/ai-software-engineering))
+- **Agent descriptions are not trustworthy on their own.** In a study of 23,247 agent-authored PRs, descriptions claiming unimplemented changes were the most common inconsistency; inconsistent PRs were accepted 28.3% vs 80.0%. ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886)) This is the reason the log leads with evidence and labels everything else.
+- **Agent-written tests often verify nothing.** 80.2% of 86,156 agent-authored test patches had weak or no explicit assertions. ([arXiv 2606.18168](https://arxiv.org/abs/2606.18168))
+
+## Compared to
+
+| Tool | What it does | Why it was not enough |
+| --- | --- | --- |
+| [add-reasoning-to-prs](https://github.com/backthread/add-reasoning-to-prs) | Asks the agent for a prose "why" block at `gh pr create` | One-shot prose, no evidence, no update on later pushes |
+| Entire, Git AI | Git-native session capture | Archives everything, surfaces nothing to the reviewer |
+| Copilot / Codex PR summaries | Summarise their own agent's work | Their agent only, and still self-report |
+
+The gap is the piece in between: structured, updatable, redacted, and anchored to what actually ran.
 
 ## Docs
 
 | Doc | Contents |
 | --- | --- |
-| [docs/RESEARCH.md](docs/RESEARCH.md) | Evidence, prior art (and where they already cover this), Claude Code hook reference with JSON, transcript JSONL format, GitHub attachment options, open questions |
-| [docs/DESIGN.md](docs/DESIGN.md) | Architecture, decision log schema, PR markdown template, CLI/hook interface, config, tech stack decision, non-goals, security/privacy |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase 0 spike through Phase 3, each with a definition of done, plus portfolio deliverables |
+| [docs/DESIGN.md](docs/DESIGN.md) | Architecture, schema, PR template, CLI/hook interface, security model |
+| [docs/RESEARCH.md](docs/RESEARCH.md) | Evidence, prior art, hook reference, transcript format, open questions |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase 0 through Phase 3, each with a definition of done |
 | [docs/SOURCES.md](docs/SOURCES.md) | Every URL consulted and what it contributed |
 
-## Why I'm building this
+## Why I built it
 
-I use Claude Code every day, and at work I ship a cloud web app and mobile apps for workshops and logistics where every PR goes through human review. The pattern is consistent: the agent does an hour of reasoning, I open a PR, and the reviewer sees a diff and a two-line description. Everything that would have made the review fast (why this approach, what was tried, what the tests actually check) is in a JSONL file on my laptop that nobody will read. The closest existing tool ([add-reasoning-to-prs](https://github.com/backthread/add-reasoning-to-prs)) asks the agent to write a prose "why" block at `gh pr create` time and deliberately stops there; git-native session capture tools (Entire, Git AI) store everything but surface nothing to reviewers. I want the piece in between: a structured, updatable, redacted log that lives where the review happens. It is small enough to finish, I can dogfood it on every PR I open, and it shows the things I want a hiring manager to see: CLI design, GitHub API integration, careful handling of sensitive data, and honest measurement of whether it helps.
+I use Claude Code every day, and at work I ship a cloud web app and mobile apps for workshops and logistics where every PR goes through human review. The pattern is consistent: the agent does an hour of work, I open a PR, and the reviewer sees a diff and a two-line description. Everything that would have made the review fast is in a JSONL file on my laptop that nobody will read.
+
+What I did not expect was that building it would disprove my own pitch twice — first that the reasoning was recoverable at all, then that the agent's prose was the best source of it. Both times the measurement is in the repository, and the design doc says so rather than papering over it.
+
+## License
+
+MIT

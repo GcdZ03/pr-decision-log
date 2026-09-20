@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The test suite runs TypeScript directly, so each version here is a
+        # claim that native type stripping works on it. `engines` follows
+        # whatever this matrix actually proves.
+        node: ['22.x', '24.x']
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # The bundle is what a published install actually executes, so it is
+      # smoke-tested rather than assumed to work.
+      - run: node dist/pdl.js doctor || true

@@ -7,6 +7,8 @@ await build({
   platform: 'node',
   target: 'node22',
   format: 'esm',
-  banner: { js: '#!/usr/bin/env node' },
+  // No shebang banner: src/pdl.ts already carries one and esbuild preserves
+  // it. Adding a second put one on line 2, where it is a syntax error, so the
+  // built binary could not run at all.
   logLevel: 'info',
 });

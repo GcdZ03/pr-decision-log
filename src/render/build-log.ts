@@ -4,6 +4,7 @@ import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-ed
 import type { Flag } from '../flags/types.ts';
 import { redact } from './redact.ts';
 import { relativize } from './relativize.ts';
+import type { Decision } from '../extract/decisions.ts';
 
 export type Verification = {
   at: string;
@@ -25,6 +26,8 @@ export type DecisionLog = {
   verification: Verification[];
   changes: Change[];
   flags: Flag[];
+  /** Claims, kept in one list with a `kind` and split at render time. */
+  decisions: Decision[];
   redaction: { hits: number; rules: string[] };
 };
 
@@ -49,7 +52,11 @@ const isTestFile = (p: string) => TEST_DIR.test(p) || TEST_FILE.test(p);
  * `output` to derive flags, but never copies it into the result. Anything the
  * renderer can see has passed through here first.
  */
-export function buildLog(events: TimelineEvent[], meta: LogMeta): DecisionLog {
+export function buildLog(
+  events: TimelineEvent[],
+  meta: LogMeta,
+  decisions: Decision[] = [],
+): DecisionLog {
   const rules = new Set<string>();
   const clean = (s: string): string => {
     const { text, hits } = redact(s);
@@ -110,6 +117,8 @@ export function buildLog(events: TimelineEvent[], meta: LogMeta): DecisionLog {
     verification,
     changes: [...changeMap.values()],
     flags,
+    // Model text, so it passes through the same redactor as everything else.
+    decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
     redaction: { hits: rules.size, rules: [...rules] },
   };
 }

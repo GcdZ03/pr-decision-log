@@ -385,6 +385,15 @@ Controls:
 >
 > There is also no hidden reasoning to fall back on: 2,170 of 2,176 `thinking` blocks on disk are stored empty *(measured)*.
 
+> **Update, 20 Sep 2026 — implementation measurements revise the above.** Rules 1 and 3 were built and measured over 23 real sessions.
+>
+> - **Rule 1 is the strongest source, not rule 3.** It produced **98 confirmed decisions**, and it is the only source where a person actually committed to something. The original ordering was right but understated it: the spike measured rule 3's yield and never measured rule 1.
+> - **Rule 3 yields nothing under a strict same-turn join.** The agent emits its prose and its tool call as two separate transcript entries of one turn, so joining on a single entry returned **0 items across every session**. A `requestId`-bounded lookback to the preceding entry was required, after which the rule produced 36 items.
+> - **Raising recall cost precision, and the "high precision" note above no longer holds unqualified.** The majority of the recovered sentences were process narration in which the marker is rhetorical rather than a choice: "verify X rather than guess", "checked rather than asserted". A narration filter removes most of these. Residual precision on the author's own transcripts is roughly **two useful items in three**, so the `(stated)` label is load-bearing and the section must never be presented as authoritative.
+> - **`(Recommended)` is stripped** from rule 1 answers. It is guidance attached to the option at question time, not part of what was chosen.
+
+**Rule 2 is deferred, not implemented.** A search of 170+ transcripts found **zero** `ExitPlanMode` tool uses, so there is no sample to build against and no way to tell an approved plan from a rejected one. Building it against a guessed schema would repeat the Phase 0 mistake of publishing claims taken from a summarised source. It waits for a real plan-mode session.
+
 Ordered by reliability:
 
 1. `AskUserQuestion` tool_use + the following user answer -> `decision` with `confirmed_by_human`.

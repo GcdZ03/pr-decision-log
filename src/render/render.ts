@@ -71,6 +71,26 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
     sections.push(`\n### Changes\n${rows.join('\n')}\n`);
   }
 
+  // Claims last, per DESIGN principle 1: the facts above are always present,
+  // these are usually absent, and a heading over nothing reads as a broken
+  // tool rather than an honest one.
+  const CLAIM_SECTIONS: { kind: string; heading: string }[] = [
+    { kind: 'decision', heading: 'Decisions' },
+    { kind: 'assumption', heading: 'Assumptions' },
+    { kind: 'open_item', heading: 'Open items' },
+  ];
+
+  for (const { kind, heading } of CLAIM_SECTIONS) {
+    const items = log.decisions.filter((d) => d.kind === kind);
+    if (items.length === 0) continue;
+
+    const lines = items.map((d) => {
+      const label = d.confidence === 'confirmed_by_human' ? ' *(confirmed by a human)*' : ' *(stated)*';
+      return `- ${d.text}${label}`;
+    });
+    sections.push(`\n### ${heading}\n${lines.join('\n')}\n`);
+  }
+
   const footer = `\n<sub>Redaction: ${log.redaction.hits} rule(s) applied.</sub>\n${MARKER_END}\n`;
 
   let body = header + blurb + sections.join('') + footer;
