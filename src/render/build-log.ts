@@ -2,7 +2,7 @@ import type { TimelineEvent, Outcome } from '../events/types.ts';
 import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
-import { redact } from './redact.ts';
+import { redact, type RedactionRule } from './redact.ts';
 import { relativize } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
@@ -43,6 +43,10 @@ export type LogMeta = {
   repoRoot?: string;
   /** Unified diff of the pull request, for the diff-side test signals. Paths are already repo-relative. */
   diff?: string;
+  /** `tests.flag_edit_after_failure`; on unless set to false. */
+  flagEditAfterFailure?: boolean;
+  /** From `redaction.extra_patterns`, applied on top of the built-in rules. */
+  extraRedactions?: RedactionRule[];
 };
 
 
@@ -60,7 +64,7 @@ export function buildLog(
 ): DecisionLog {
   const rules = new Set<string>();
   const clean = (s: string): string => {
-    const { text, hits } = redact(s);
+    const { text, hits } = redact(s, meta.extraRedactions);
     for (const h of hits) rules.add(h);
     return text;
   };
@@ -89,7 +93,8 @@ export function buildLog(
     }
   }
 
-  const flags: Flag[] = detectTestEditedAfterFailure(events).map((f) => ({
+  const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
+  const flags: Flag[] = timeline.map((f) => ({
     ...f,
     file: rel(f.file),
     detail: clean(meta.repoRoot ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail),

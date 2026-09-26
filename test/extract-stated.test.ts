@@ -182,3 +182,20 @@ test('an explicit assumption in the first person is classified as one', () => {
 
   assert.equal(d[0]?.kind, 'assumption');
 });
+
+test('a configured decision marker is recognised', () => {
+  const d = extractDecisions([turn('Decision: keep the store outside the repo.')], { extraMarkers: ['Decision:'] }).filter((x) => x.source === 'stated');
+
+  assert.equal(d.length, 1);
+  assert.equal(d[0]?.kind, 'decision');
+});
+
+test('without the configured marker the same sentence is not a decision', () => {
+  assert.deepEqual(stated([turn('Decision: keep the store outside the repo.')]), []);
+});
+
+test('a configured word marker matches whole words only', () => {
+  const d = extractDecisions([turn('The rejectedness metric was fine.')], { extraMarkers: ['Rejected'] }).filter((x) => x.source === 'stated');
+
+  assert.deepEqual(d, []);
+});

@@ -17,7 +17,7 @@ import {
   type Scope,
 } from './doctor/settings.ts';
 import { loadConfig } from './config/config.ts';
-import { redact } from './render/redact.ts';
+import { compileExtraPatterns, redact } from './render/redact.ts';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -46,7 +46,7 @@ function prDiff(): string {
 
 function decisionsFor(sessionId: string) {
   const path = findTranscript(sessionId);
-  return path ? extractDecisions(readTranscript(path)) : [];
+  return path ? extractDecisions(readTranscript(path), { extraMarkers: config.extract.decision_markers }) : [];
 }
 
 function logFor(store: EventStore, sessionId: string) {
@@ -57,7 +57,13 @@ function logFor(store: EventStore, sessionId: string) {
     headSha: git(['rev-parse', '--short', 'HEAD']),
     repoRoot: git(['rev-parse', '--show-toplevel']) || process.cwd(),
     diff: prDiff(),
+    flagEditAfterFailure: config.tests.flag_edit_after_failure,
+    extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
   }, decisionsFor(sessionId));
+}
+
+function renderLog(store: EventStore, sessionId: string): string {
+  return render(logFor(store, sessionId), { maxChars: config.publish.max_chars });
 }
 
 function build(store: EventStore, sessionId: string | undefined): void {
@@ -66,7 +72,7 @@ function build(store: EventStore, sessionId: string | undefined): void {
     process.exitCode = 2;
     return;
   }
-  process.stdout.write(render(logFor(store, sessionId)));
+  process.stdout.write(renderLog(store, sessionId));
 }
 
 async function publishCmd(store: EventStore, sessionId: string | undefined, prNumber: string | undefined, dryRun: boolean): Promise<void> {
@@ -77,7 +83,7 @@ async function publishCmd(store: EventStore, sessionId: string | undefined, prNu
   }
   const result = await publish({
     prNumber: Number(prNumber),
-    section: render(logFor(store, sessionId)),
+    section: renderLog(store, sessionId),
     dryRun,
   });
   process.stdout.write(`${result.status}${result.error ? `: ${result.error}` : ''}\n`);
@@ -103,10 +109,14 @@ async function hook(store: EventStore): Promise<void> {
 
     // Two triggers. `gh pr create` is when the pull request first exists, and
     // `Stop` catches everything that happened after it was opened.
-    const created = event ? detectPrCreation(event) !== null : false;
+    const created = config.publish.on_pr_create && event ? detectPrCreation(event) !== null : false;
     const stopped = payload['hook_event_name'] === 'Stop';
+
+    // Retention runs from the Stop hook because there is no other process;
+    // pruneIfDue keeps it to one directory scan a day.
+    if (stopped) store.pruneIfDue(config.store.retention_days, Date.now());
     if (sessionId && (created || stopped)) {
-      await autoPublish({ section: render(logFor(store, sessionId)), mode: config.publish.mode });
+      await autoPublish({ section: renderLog(store, sessionId), mode: config.publish.mode });
     }
   } catch {
     // Fail open: a malformed payload must never break the agent loop.

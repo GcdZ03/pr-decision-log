@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redact } from '../src/render/redact.ts';
+import { redact, compileExtraPatterns } from '../src/render/redact.ts';
 
 test('redacts GitHub tokens of every prefix', () => {
   for (const t of ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_']) {
@@ -60,4 +60,18 @@ test('reports which rules fired, for the redaction summary', () => {
   assert.equal(hits.length, 2);
   assert.ok(hits.includes('github_token'));
   assert.ok(hits.includes('aws_access_key'));
+});
+
+test('a configured extra pattern is redacted and named in the hits', () => {
+  const extra = compileExtraPatterns(['INTERNAL-[A-Z0-9]{8}']);
+  const { text, hits } = redact('ticket INTERNAL-AB12CD34 fixed', extra);
+
+  assert.ok(!text.includes('INTERNAL-AB12CD34'));
+  assert.deepEqual(hits, ['custom_1']);
+});
+
+test('extra patterns add to the built-in rules rather than replacing them', () => {
+  const { text } = redact('AKIAIOSFODNN7EXAMPLE', compileExtraPatterns(['NOPE']));
+
+  assert.ok(!text.includes('AKIAIOSFODNN7EXAMPLE'));
 });

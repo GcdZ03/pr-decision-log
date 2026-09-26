@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventStore } from '../src/events/store.ts';
@@ -120,5 +120,50 @@ test('events without an id are never collapsed into each other', () => {
     store.append('sess-1', cmd(''));
 
     assert.equal(store.read('sess-1').length, 2);
+  });
+});
+
+// Retention: sessions hold raw local command output, so they must not
+// accumulate forever.
+
+function age(root: string, sessionId: string, days: number) {
+  const t = (Date.now() - days * 86_400_000) / 1000;
+  utimesSync(join(root, 'events', `${sessionId}.jsonl`), t, t);
+}
+
+test('prune deletes sessions older than the retention window and keeps newer ones', () => {
+  withStore((store, root) => {
+    store.append('old', cmd('a'));
+    store.append('new', cmd('b'));
+    age(root, 'old', 40);
+    age(root, 'new', 2);
+
+    assert.equal(store.prune(30, Date.now()), 1);
+    assert.deepEqual(store.read('old'), []);
+    assert.equal(store.read('new').length, 1);
+  });
+});
+
+test('a retention of zero keeps everything', () => {
+  withStore((store, root) => {
+    store.append('old', cmd('a'));
+    age(root, 'old', 400);
+
+    assert.equal(store.prune(0, Date.now()), 0);
+    assert.equal(store.read('old').length, 1);
+  });
+});
+
+test('pruneIfDue runs at most once a day, so the Stop hook is not scanning on every turn', () => {
+  withStore((store, root) => {
+    store.append('old', cmd('a'));
+    age(root, 'old', 40);
+    const now = Date.now();
+
+    assert.equal(store.pruneIfDue(30, now), 1);
+    store.append('old2', cmd('b'));
+    age(root, 'old2', 40);
+    assert.equal(store.pruneIfDue(30, now + 3_600_000), 0, 'pruned again within the day');
+    assert.equal(store.pruneIfDue(30, now + 2 * 86_400_000), 1);
   });
 });

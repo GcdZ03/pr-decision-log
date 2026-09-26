@@ -37,11 +37,32 @@ const RULES: RedactionRule[] = [
   },
 ];
 
-export function redact(input: string): { text: string; hits: string[] } {
+/**
+ * Rules from `redaction.extra_patterns`. They are added to the built-in set,
+ * never substituted for it: there is deliberately no setting that turns the
+ * built-in rules off, since the repo's config wins and one committed file
+ * would otherwise disable secret redaction for every contributor.
+ *
+ * Patterns are validated when config loads; one that still fails to compile
+ * is skipped rather than allowed to break publishing.
+ */
+export function compileExtraPatterns(patterns: string[]): RedactionRule[] {
+  const rules: RedactionRule[] = [];
+  patterns.forEach((p, i) => {
+    try {
+      rules.push({ name: `custom_${i + 1}`, pattern: new RegExp(p, 'g') });
+    } catch {
+      // Reported by the config loader; nothing to add here.
+    }
+  });
+  return rules;
+}
+
+export function redact(input: string, extra: RedactionRule[] = []): { text: string; hits: string[] } {
   let text = input;
   const hits: string[] = [];
 
-  for (const rule of RULES) {
+  for (const rule of [...RULES, ...extra]) {
     rule.pattern.lastIndex = 0;
     if (!rule.pattern.test(text)) continue;
     rule.pattern.lastIndex = 0;
