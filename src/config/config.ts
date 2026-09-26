@@ -4,21 +4,28 @@ import { homedir } from 'node:os';
 
 export type PublishMode = 'body' | 'comment';
 
+/**
+ * Every setting here is read by the code; a test enforces it. Settings for
+ * features that do not exist (on_push, model_summary) and switches that would
+ * weaken the safety model (builtin_rules, publish_tool_output) were removed
+ * rather than accepted and ignored, so a config file cannot promise behaviour
+ * the tool does not have.
+ */
 export type Config = {
-  publish: { mode: PublishMode; max_chars: number; on_pr_create: boolean; on_push: boolean };
-  extract: { decision_markers: string[]; min_decisions_to_publish: number; model_summary: boolean };
+  publish: { mode: PublishMode; max_chars: number; on_pr_create: boolean };
+  extract: { decision_markers: string[] };
   tests: { flag_edit_after_failure: boolean };
-  redaction: { builtin_rules: boolean; extra_patterns: string[]; publish_tool_output: boolean };
+  redaction: { extra_patterns: string[] };
   store: { dir: string; retention_days: number };
   /** Anything rejected while loading. Surfaced by `pdl doctor`, never thrown. */
   problems: string[];
 };
 
 export const DEFAULT_CONFIG: Config = {
-  publish: { mode: 'body', max_chars: 12000, on_pr_create: true, on_push: false },
-  extract: { decision_markers: [], min_decisions_to_publish: 0, model_summary: false },
+  publish: { mode: 'body', max_chars: 12000, on_pr_create: true },
+  extract: { decision_markers: [] },
   tests: { flag_edit_after_failure: true },
-  redaction: { builtin_rules: true, extra_patterns: [], publish_tool_output: false },
+  redaction: { extra_patterns: [] },
   store: { dir: join(homedir(), '.local', 'share', 'pdl'), retention_days: 30 },
   problems: [],
 };
@@ -115,6 +122,26 @@ function merge(base: Config, raw: Raw, problems: string[]): Config {
   if (!PUBLISH_MODES.includes(merged.publish.mode)) {
     problems.push(`publish.mode: expected one of ${PUBLISH_MODES.join(', ')}, using ${base.publish.mode}`);
     merged.publish = { ...merged.publish, mode: base.publish.mode };
+  }
+
+  const valid = merged.redaction.extra_patterns.filter((p) => {
+    try {
+      new RegExp(p);
+      return true;
+    } catch {
+      problems.push(`redaction.extra_patterns: ${JSON.stringify(p)} is not a valid regular expression, ignored`);
+      return false;
+    }
+  });
+  merged.redaction = { ...merged.redaction, extra_patterns: valid };
+
+  if (!Number.isFinite(merged.store.retention_days) || merged.store.retention_days < 0) {
+    problems.push(`store.retention_days: expected 0 or more days, using ${base.store.retention_days}`);
+    merged.store = { ...merged.store, retention_days: base.store.retention_days };
+  }
+  if (merged.publish.max_chars < 1000) {
+    problems.push(`publish.max_chars: below 1000 leaves no room for the log, using ${base.publish.max_chars}`);
+    merged.publish = { ...merged.publish, max_chars: base.publish.max_chars };
   }
 
   merged.store = { ...merged.store, dir: expandHome(merged.store.dir) };

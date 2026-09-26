@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildLog } from '../src/render/build-log.ts';
+import { compileExtraPatterns } from '../src/render/redact.ts';
 import type { TimelineEvent } from '../src/events/types.ts';
 
 const meta = { repo: 'github.com/g/r', branch: 'feat/x', headSha: 'abc1234' };
@@ -83,4 +84,20 @@ test('file paths are repo-relative in changes and in flag details', () => {
   assert.equal(log.changes[0]?.file, 'src/a.test.ts');
   assert.equal(log.flags[0]?.file, 'src/a.test.ts');
   assert.ok(!JSON.stringify(log).includes('/repo/src'), 'absolute path leaked into the log');
+});
+
+test('flagEditAfterFailure: false turns the timeline flag off', () => {
+  const log = buildLog([
+    cmd('c1', 'npm test', 'fail', 'FAIL src/a.test.ts'),
+    edit('e1', 'src/a.test.ts', 5, 2),
+    cmd('c2', 'npm test', 'pass'),
+  ], { ...meta, flagEditAfterFailure: false });
+
+  assert.ok(!log.flags.some((f) => f.code === 'TEST_EDITED_AFTER_FAILURE'));
+});
+
+test('extra redaction rules apply to everything the log publishes', () => {
+  const log = buildLog([cmd('c1', 'npm test', 'pass')], { ...meta, intent: 'fix INTERNAL-AB12CD34', extraRedactions: compileExtraPatterns(['INTERNAL-[A-Z0-9]{8}']) });
+
+  assert.ok(!JSON.stringify(log).includes('INTERNAL-AB12CD34'));
 });

@@ -117,7 +117,7 @@ Note the last line. An earlier version inferred trust from an empty store, and t
 | `pdl doctor` | Seven checks on the install, with a remedy for each failure |
 | `pdl init [--user]` | Register hooks in project or user settings |
 | `pdl show <session>` | Print the recorded timeline |
-| `pdl build <session>` | Render the log to stdout |
+| `pdl build [session]` | Render the log to stdout: the current branch's merged log, or one session's |
 | `pdl publish <session> <pr>` | Publish to a pull request by hand |
 | `pdl purge` | Delete every recorded session |
 | `pdl redact-check [file]` | Run text through the redactor and report what matched |
@@ -132,13 +132,25 @@ The repository is also a plugin, so the hooks can be installed without editing a
 
 Optional. `pdl.config.json` at the repo root is the team's shared policy; `~/.config/pdl/config.json` holds personal defaults. Repo beats user beats built-in, so a personal file cannot quietly weaken what a repository asks for.
 
+| Setting | Default | Does |
+| --- | --- | --- |
+| `publish.mode` | `"body"` | `"comment"` publishes a sticky PR comment instead of editing the body |
+| `publish.max_chars` | `12000` | Size budget for the log; whole sections are trimmed from the end to fit (minimum 1000) |
+| `publish.on_pr_create` | `true` | Publish as soon as `gh pr create` succeeds, rather than waiting for the end of the turn |
+| `extract.decision_markers` | `[]` | Extra phrases, such as `"Decision:"`, that mark a stated decision |
+| `tests.flag_edit_after_failure` | `true` | `false` turns `TEST_EDITED_AFTER_FAILURE` off |
+| `redaction.extra_patterns` | `[]` | Regexes redacted on top of the built-in rules, never instead of them |
+| `store.dir` | `~/.local/share/pdl` | Where sessions are recorded |
+| `store.retention_days` | `30` | Sessions untouched this long are deleted, checked once a day; `0` keeps everything |
+
 ```json
 {
-  "publish": { "mode": "comment", "max_chars": 12000 },
-  "redaction": { "extra_patterns": ["INTERNAL-[A-Z0-9]{8}"] },
-  "store": { "dir": "~/.local/share/pdl" }
+  "publish": { "mode": "comment" },
+  "redaction": { "extra_patterns": ["INTERNAL-[A-Z0-9]{8}"] }
 }
 ```
+
+That table is the whole list. An earlier version accepted eleven more settings and read none of them, so a test now fails for any setting the code does not use. Settings for features that do not exist yet were removed, and so were two that would weaken safety: a switch to turn off the built-in redaction (the repo's config wins, so one committed file could disable it for every contributor), and one to publish tool output.
 
 `mode: "comment"` publishes a sticky pull request comment instead of editing the body. It finds its own comment by marker and edits it by id — never `gh pr comment --edit-last`, which edits whatever you most recently wrote and would overwrite a review note typed between two publishes.
 
@@ -156,9 +168,15 @@ Claude Code hooks -> events (JSONL, outside the repo)
                        renderer -> idempotent splice into the PR body
 ```
 
-Publishing is a **post-hoc edit** of the PR body, not a rewrite of `gh pr create --body`. Two hooks rewriting the same tool input resolve in non-deterministic order, so anyone running another input-rewriting hook would lose their log intermittently — a failure that is close to unreportable. The PR number is re-derived from the current branch rather than stored, so nothing goes stale across a resume or a rebase.
+Publishing is a **post-hoc edit** of the PR body, not a rewrite of `gh pr create --body`. Two hooks rewriting the same tool input resolve in non-deterministic order, so anyone running another input-rewriting hook would lose their log intermittently — a failure that is close to unreportable.
 
-Repeated publishes are a no-op: the section carries a content hash, and an unchanged log is not rewritten.
+**One log per pull request, however many sessions it took.** Hook payloads carry no branch, so at the end of each turn — where git already runs — pdl records which branch that session was on. Every event is assigned to the turn it happened in, and a branch's log is every event from every session whose turn was on that branch, merged in time order. A `--resume`, a second session the next day, and a session that switched branches part-way all land where they belong.
+
+**Stacked PRs are diffed against their own base**, which comes back from GitHub in the same lookup that finds the PR, so a PR built on another feature branch shows only its own changes.
+
+**The end-of-turn cost is network, so pdl spends as little as possible.** Measured, the local work is about 75 ms and each `gh` round-trip about 500 ms. pdl makes no call while a branch is known to have no PR (rechecked every five minutes, or immediately on `gh pr create`), none when the log has not changed since it was last published, and otherwise one lookup plus one write. A turn on a branch with no PR went from 0.7 s to 0.08 s, which is Node's startup time.
+
+If pdl is registered twice — user and project settings, or plugin and `init` — each hook fires twice. Events are collapsed by id when read, so the log is still right, and `doctor` says to remove one.
 
 ## Limitations, honestly
 
@@ -167,7 +185,8 @@ Repeated publishes are a no-op: the section carries a content hash, and an uncha
 - **Plan-mode extraction is not implemented.** Zero `ExitPlanMode` uses exist across 170+ transcripts here, so there is no sample to build against. Guessing at the schema is how the spike got three things wrong once already.
 - **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.
 - **The diff rules are shallow regexes**, not parsers. They are tuned against real history for false positives, but that history contains no actual shortcuts, so recall is only evidenced by planted cases and one real agent run.
-- **Stacked pull requests** are diffed against the repository's default branch, so a PR based on another feature branch may show its parent's changes too.
+- **A PR opened outside the session** (on the web, or from another terminal) is picked up within five minutes, not instantly.
+- **If you delete the log from a PR body by hand**, it comes back the next time the log changes, not on the next turn.
 - **Claude Code only.** Cursor and Copilot CLI adapters are Phase 3.
 
 ## The problem, with evidence

@@ -11,6 +11,7 @@ const healthy: Facts = {
   env: {},
   configProblems: [],
   trust: 'accepted',
+  hookScopes: ['project'],
 };
 
 const find = (facts: Facts, name: string) => {
@@ -129,4 +130,12 @@ test('an explicitly unaccepted trust dialog warns', () => {
 
 test('an unreadable Claude Code state file skips rather than guessing', () => {
   assert.equal(find({ ...healthy, trust: 'unreadable' }, 'folder trust').status, 'skip');
+});
+
+test('pdl registered in both project and user settings warns, because every hook fires twice', () => {
+  const check = find({ ...healthy, hookScopes: ['project', 'user'] }, 'hooks registered');
+
+  assert.equal(check.status, 'warn');
+  assert.match(check.detail, /both/i);
+  assert.match(check.remedy ?? '', /remove/i);
 });

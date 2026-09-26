@@ -21,6 +21,8 @@ export interface Facts {
   configProblems: string[];
   /** This folder's trust record in Claude Code's own state file. */
   trust: TrustState;
+  /** Settings files that register pdl hooks. */
+  hookScopes: ('project' | 'user')[];
 }
 
 export type TrustState = 'accepted' | 'not-accepted' | 'unknown-folder' | 'unreadable';
@@ -68,6 +70,15 @@ function registeredCheck(facts: Facts): Check {
       status: 'fail',
       detail: 'no pdl hooks found in any settings file',
       remedy: 'Run `pdl init` in this repository.',
+    };
+  }
+  if (facts.hookScopes.length > 1) {
+    return {
+      name: 'hooks registered',
+      status: 'warn',
+      detail: 'registered in both project and user settings, so every hook fires twice',
+      remedy:
+        'Events are de-duplicated when read, but each turn still runs two publishes. Remove one: delete the pdl entries from ~/.claude/settings.json, or from this repo\'s .claude/settings.json.',
     };
   }
   if (missing.length > 0) {

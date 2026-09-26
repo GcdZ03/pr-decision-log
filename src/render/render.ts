@@ -43,7 +43,8 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
   const tool = options.toolUrl ?? 'https://github.com/GcdZ03/pr-decision-log';
 
   const header = `${MARKER_START} v=1 sha=${log.repo.headSha ?? 'unknown'} -->\n## Decision log\n`;
-  const blurb = `\n*Recorded automatically from the agent session on \`${log.branch}\`. Everything below is observed from tool events, not the model's self-report. [What this is](${tool}).*\n`;
+  const from = log.sessions.length > 1 ? `${log.sessions.length} agent sessions` : 'the agent session';
+  const blurb = `\n*Recorded automatically from ${from} on \`${log.branch}\`. Everything below is observed from tool events, not the model's self-report. [What this is](${tool}).*\n`;
 
   const sections: string[] = [];
 

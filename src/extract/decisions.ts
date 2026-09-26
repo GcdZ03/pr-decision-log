@@ -79,7 +79,19 @@ function truncate(s: string): string {
  * narration of what the agent is about to do, which is not a decision and
  * would bulk out the PR body for no reader benefit.
  */
-function fromStatedRationale(entries: TranscriptEntry[]): Decision[] {
+/**
+ * A configured marker as a regex. Word boundaries apply only at edges that are
+ * word characters, so `Decision:` still matches before a space and `Rejected`
+ * does not match inside `rejectedness`.
+ */
+function markerRe(marker: string): RegExp {
+  const esc = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lead = /^\w/.test(marker) ? '(?<!\\w)' : '';
+  const trail = /\w$/.test(marker) ? '(?!\\w)' : '';
+  return new RegExp(`${lead}${esc}${trail}`, 'i');
+}
+
+function fromStatedRationale(entries: TranscriptEntry[], markers: typeof MARKERS): Decision[] {
   const out: Decision[] = [];
   const seen = new Set<string>();
 
@@ -100,7 +112,7 @@ function fromStatedRationale(entries: TranscriptEntry[]): Decision[] {
     if (!text) continue;
 
     for (const sentence of sentences(text)) {
-      const hit = MARKERS.find((m) => m.re.test(sentence));
+      const hit = markers.find((m) => m.re.test(sentence));
       if (!hit) continue;
       if (isNarration(sentence)) continue;
 
@@ -191,8 +203,14 @@ function fromQuestions(entries: TranscriptEntry[]): Decision[] {
   return decisions;
 }
 
-export function extractDecisions(entries: TranscriptEntry[]): Decision[] {
-  return [...fromQuestions(entries), ...fromStatedRationale(entries)];
+export type ExtractOptions = {
+  /** From `extract.decision_markers`; added to the built-in markers as decisions. */
+  extraMarkers?: string[];
+};
+
+export function extractDecisions(entries: TranscriptEntry[], options: ExtractOptions = {}): Decision[] {
+  const extra = (options.extraMarkers ?? []).filter((m) => m.trim() !== '').map((m) => ({ kind: 'decision' as const, re: markerRe(m) }));
+  return [...fromQuestions(entries), ...fromStatedRationale(entries, [...MARKERS, ...extra])];
 }
 
 export { assistantText };
