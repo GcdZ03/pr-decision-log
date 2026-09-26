@@ -5,6 +5,8 @@ import type { Flag } from '../flags/types.ts';
 import { redact } from './redact.ts';
 import { relativize } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
+import { isTestFile } from '../flags/test-files.ts';
+import { analyzeDiff } from '../flags/diff-signals.ts';
 
 export type Verification = {
   at: string;
@@ -39,11 +41,10 @@ export type LogMeta = {
   generatedAt?: string;
   /** Absolute paths are made relative to this before anything is published. */
   repoRoot?: string;
+  /** Unified diff of the pull request, for the diff-side test signals. Paths are already repo-relative. */
+  diff?: string;
 };
 
-const TEST_DIR = /(^|\/)(tests?|spec|__tests__)\//i;
-const TEST_FILE = /\.(test|spec)\.[cm]?[tj]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.swift$|Test\.java$/;
-const isTestFile = (p: string) => TEST_DIR.test(p) || TEST_FILE.test(p);
 
 /**
  * Turn a session timeline into the renderable document.
@@ -104,6 +105,13 @@ export function buildLog(
       detail: `${changeMap.size} file(s) changed and no test command was recorded in this session.`,
       evidence: [],
     });
+  }
+
+  // What changed in the tests, alongside the timeline's when. Details quote diff
+  // lines, so they go through the redactor like any other text.
+  if (meta.diff) {
+    const corroborated = new Set(flags.filter((f) => f.code === 'TEST_EDITED_AFTER_FAILURE').map((f) => f.file));
+    for (const f of analyzeDiff(meta.diff, { corroborated })) flags.push({ ...f, detail: clean(f.detail) });
   }
 
   const intent = meta.intent === undefined ? undefined : clean(meta.intent);

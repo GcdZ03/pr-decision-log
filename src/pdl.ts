@@ -26,6 +26,24 @@ function git(args: string[]): string {
   return p.status === 0 ? (p.stdout ?? '').trim() : '';
 }
 
+/**
+ * The branch's diff against the default branch, for the diff-side flags.
+ *
+ * Uses the remote's default branch rather than asking `gh` for the PR's base,
+ * which keeps a network call off the synchronous Stop hook. The cost is that a
+ * PR stacked on another branch is diffed against the default branch and may
+ * show its parent's changes too. Empty on any failure: the diff flags are an
+ * addition to the log, never a reason for it not to publish.
+ */
+function prDiff(): string {
+  const base = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']) || 'origin/main';
+  const p = spawnSync('git', ['diff', '--no-color', `${base}...HEAD`], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return p.status === 0 ? (p.stdout ?? '') : '';
+}
+
 function decisionsFor(sessionId: string) {
   const path = findTranscript(sessionId);
   return path ? extractDecisions(readTranscript(path)) : [];
@@ -38,6 +56,7 @@ function logFor(store: EventStore, sessionId: string) {
     branch: branch === 'HEAD' ? 'detached' : branch,
     headSha: git(['rev-parse', '--short', 'HEAD']),
     repoRoot: git(['rev-parse', '--show-toplevel']) || process.cwd(),
+    diff: prDiff(),
   }, decisionsFor(sessionId));
 }
 

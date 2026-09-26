@@ -52,7 +52,10 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
   if (log.flags.length > 0) {
     const lines = log.flags.map((f) => {
       const where = f.file ? ` \`${f.file}\`` : '';
-      return `- **${f.code}**${where} ${f.detail}`;
+      // `info` exists to draw the eye without accusing anyone; rendered the
+      // same as a warning it would read as exactly the accusation it avoids.
+      const note = f.severity === 'info' ? ' *(note)*' : '';
+      return `- **${f.code}**${note}${where} ${f.detail}`;
     });
     sections.push(`\n### Flags\n${lines.join('\n')}\n`);
   }
