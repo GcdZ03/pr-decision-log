@@ -26,6 +26,11 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The plugin route runs the committed bundle, because Claude Code installs
+      # plugins from git with no build step. A bundle that no longer matches the
+      # source would ship stale code to every plugin user, so it fails CI.
+      - name: Committed bundle matches the source
+        run: git diff --exit-code -- dist/ || (echo "::error::dist/ is stale. Run npm run build and commit dist/pdl.js." && exit 1)
       # The bundle is what a published install actually executes, so it is
       # smoke-tested rather than assumed to work.
       - run: node dist/pdl.js doctor || true

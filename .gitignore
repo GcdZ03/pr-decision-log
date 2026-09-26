@@ -9,7 +9,6 @@ Thumbs.db
 
 # Dependencies / build (language-agnostic placeholders; trim once the stack is chosen)
 node_modules/
-dist/
 build/
 target/
 bin/
