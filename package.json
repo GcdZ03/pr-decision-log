@@ -25,7 +25,7 @@
     "node": ">=22"
   },
   "bin": {
-    "pdl": "./dist/pdl.js"
+    "pdl": "dist/pdl.js"
   },
   "files": [
     "dist",
