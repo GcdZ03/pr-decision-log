@@ -100,3 +100,25 @@ test('sessionCount reports how many sessions have been recorded', () => {
     assert.equal(store.sessionCount(), 2);
   });
 });
+
+// Registering pdl in both user and project settings fires every hook twice,
+// so the same tool call is appended twice. Reading back collapses it.
+
+test('an event appended twice under the same id is read back once', () => {
+  withStore((store) => {
+    store.append('sess-1', cmd('a'));
+    store.append('sess-1', cmd('a'));
+    store.append('sess-1', cmd('b'));
+
+    assert.deepEqual(store.read('sess-1').map((e) => e.id), ['a', 'b']);
+  });
+});
+
+test('events without an id are never collapsed into each other', () => {
+  withStore((store) => {
+    store.append('sess-1', cmd(''));
+    store.append('sess-1', cmd(''));
+
+    assert.equal(store.read('sess-1').length, 2);
+  });
+});

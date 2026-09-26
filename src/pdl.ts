@@ -122,6 +122,13 @@ function init(scope: Scope): void {
 
   process.stdout.write(`${existed ? 'updated' : 'created'} ${path}\n`);
   process.stdout.write(`  registered ${pdlHookEvents(merged).length} hook events\n`);
+
+  const other = scope === 'user' ? 'project' : 'user';
+  if (pdlHookEvents(readSettings(settingsPathFor(other, root))).length > 0) {
+    process.stdout.write(
+      `  warning: pdl is also registered in ${other} settings (${settingsPathFor(other, root)}); every hook will fire twice. Remove one of them.\n`,
+    );
+  }
   if (scope === 'project') {
     process.stdout.write('  hooks stay dormant until you accept the trust dialog for this folder\n');
   }
@@ -146,6 +153,10 @@ function doctor(store: EventStore): void {
     env: process.env,
     configProblems: config.problems,
     trust: trustState(root),
+    hookScopes: [
+      ...(pdlHookEvents(project).length > 0 ? ['project' as const] : []),
+      ...(pdlHookEvents(user).length > 0 ? ['user' as const] : []),
+    ],
   };
 
   const checks = diagnose(facts);

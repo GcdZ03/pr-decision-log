@@ -66,10 +66,19 @@ export class EventStore {
     }
 
     const events: TimelineEvent[] = [];
+    const seen = new Set<string>();
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
-        events.push(JSON.parse(line) as TimelineEvent);
+        const event = JSON.parse(line) as TimelineEvent;
+        // pdl registered twice (user and project settings, or plugin and
+        // init) fires every hook twice. Collapsing on read makes that
+        // harmless without a read on the append hot path.
+        if (event.id) {
+          if (seen.has(event.id)) continue;
+          seen.add(event.id);
+        }
+        events.push(event);
       } catch {
         // A hook killed mid-write leaves a partial trailing line. Skipping it
         // is correct: one torn record must not make the session unreadable.
