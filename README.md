@@ -108,6 +108,8 @@ node dist/pdl.js doctor    # confirms they are actually firing
 
 Note the last line. An earlier version inferred trust from an empty store, and that inference failed in exactly the case that matters: headless `claude -p` runs bypass the dialog, so they record sessions and the check went green while every interactive session recorded nothing.
 
+**This repository runs its own hooks.** `.claude/settings.json` registers pdl on itself, so if you open a clone in Claude Code and accept the trust dialog, your sessions here are recorded to `~/.local/share/pdl` and the log may be published to any pull request you open from that branch. Decline the dialog, or set `PDL_DISABLE=1`, to opt out.
+
 ## Commands
 
 | Command | Does |
@@ -170,10 +172,10 @@ Repeated publishes are a no-op: the section carries a content hash, and an uncha
 
 ## The problem, with evidence
 
-- **AI PRs sit in the queue.** LinearB's 2026 benchmarks (8.1M PRs, 4,800+ orgs) found AI-generated PRs wait **4.6x longer** for a first review, agentic PRs **5.3x**, and are accepted **32.7%** of the time vs **84.4%** for manual PRs. ([source](https://linearb.io/resources/software-engineering-benchmarks-report))
+- **AI PRs sit in the queue.** LinearB's 2026 benchmarks (8.1M PRs, 4,800 engineering teams) found AI-generated PRs wait **4.6x longer** for a first review, agentic PRs **5.3x** longer to be picked up, and are accepted **32.7%** of the time vs **84.4%** for manual PRs. ([source](https://linearb.io/resources/software-engineering-benchmarks-report))
 - **Review is the bottleneck, not generation.** Faros AI (10,000+ developers, 1,255 teams): high-AI-adoption teams merge **98% more PRs**, but PR review time rises **91%** and PR size **154%**. ([source](https://www.faros.ai/blog/ai-software-engineering))
-- **Agent descriptions are not trustworthy on their own.** In a study of 23,247 agent-authored PRs, descriptions claiming unimplemented changes were the most common inconsistency; inconsistent PRs were accepted 28.3% vs 80.0%. ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886)) This is the reason the log leads with evidence and labels everything else.
-- **Agent-written tests often verify nothing.** 80.2% of 86,156 agent-authored test patches had weak or no explicit assertions. ([arXiv 2606.18168](https://arxiv.org/abs/2606.18168))
+- **Agent descriptions are not trustworthy on their own.** In a study of 23,247 agent-authored PRs, 1.7% had a high mismatch between description and code, most often a description claiming changes that were never made; those PRs were accepted 28.3% of the time vs 80.0%. ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886)) This is the reason the log leads with evidence and labels everything else.
+- **Agent-written tests often verify nothing.** 80.2% of 86,156 agent-authored test patches had weak or no explicit oracle signals, meaning assertions that check nothing meaningful. ([arXiv 2606.18168](https://arxiv.org/abs/2606.18168))
 
 ## Compared to
 

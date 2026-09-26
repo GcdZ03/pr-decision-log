@@ -74,7 +74,7 @@ Goal: same log, more agents and consumers; keep the schema stable.
 - [ ] Schema `pdl/1` frozen and published with a JSON Schema; changelog policy.
 - [ ] Local viewer: `pdl show --html` renders the JSON to a single static page (or hand off to claude-replay with a deep link to the relevant turn).
 - [ ] GitHub App (optional): lets non-Actions users get Check Runs; only if there is demand, since it adds hosting.
-- [ ] GitLab MR publisher behind the publisher interface, if you ever need it at work.
+- [ ] GitLab MR publisher behind the publisher interface, if the author's workplace ever needs it.
 
 Definition of done: one PR authored with Cursor and one with Copilot CLI carry logs produced by the same renderer; a schema validator passes on all fixtures; adapters have their own fixture-based tests.
 
