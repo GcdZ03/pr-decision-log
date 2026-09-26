@@ -6,7 +6,7 @@ Planning-pass research for `pr-decision-log`, done 2026-09-19. Everything stated
 
 | Claim | Number | Source |
 | --- | --- | --- |
-| AI PRs wait longer for first review | 4.6x longer pickup (16+ h vs about 200 min); agentic PRs 5.3x | LinearB 2026 Software Engineering Benchmarks, 8.1M PRs, 4,800+ orgs |
+| AI PRs wait longer for first review | 4.6x longer pickup (16+ h vs about 200 min); agentic PRs 5.3x | LinearB 2026 Software Engineering Benchmarks, 8.1M PRs, 4,800 engineering teams |
 | ...but review faster once started | about 194 vs 252 min | LinearB 2026 |
 | AI PRs are accepted less | 32.7% vs 84.4% for manual PRs | LinearB 2026 |
 | Independent confirmation of the wait | 4.6x longer review wait; 48-58% faster time-to-PR | Opsera 2026 AI Coding Impact Benchmark (Jan 29 2026), 250k+ developers |

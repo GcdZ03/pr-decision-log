@@ -5,10 +5,10 @@ Every URL consulted for this planning pass, one line each. "Fetched" means the p
 ## Problem evidence
 
 - https://addyosmani.com/blog/agentic-code-review/ (fetched) - "first human being to ever lay eyes on this code"; recommends requiring decision logs of agent reasoning and heightened scrutiny of test changes; aggregates GitClear/Faros/CodeRabbit stats.
-- https://linearb.io/resources/software-engineering-benchmarks-report (fetched) - 8.1M PRs, 4,800+ orgs; AI PRs wait 4.6x longer for pickup, agentic 5.3x, reviewed 2x faster once started; acceptance 32.7% vs 84.4%.
+- https://linearb.io/resources/software-engineering-benchmarks-report (fetched) - 8.1M PRs, 4,800 engineering teams; AI PRs wait 4.6x longer for pickup, agentic 5.3x, reviewed 2x faster once started; acceptance 32.7% vs 84.4%.
 - https://opsera.ai/newsroom/new-opsera-report-reveals-how-ai-is-transforming-software-delivery-and-driving-business-outcomes/ (fetched) - 2026 AI Coding Impact Benchmark, Jan 29 2026, 250k+ developers; 4.6x longer review wait; 48-58% faster time-to-PR.
 - https://www.faros.ai/blog/ai-software-engineering (fetched) - AI Productivity Paradox, Jul 23 2025, 10k+ developers, 1,255 teams; 98% more PRs merged, 91% longer review time, 154% larger PRs, 9% more bugs per developer.
-- https://arxiv.org/abs/2601.04886 (fetched) - Message-code inconsistency in agent PRs: 23,247 PRs; inconsistent PRs accepted 28.3% vs 80.0%, 3.5x longer to merge; most common type is describing unimplemented changes.
+- https://arxiv.org/abs/2601.04886 (fetched) - Message-code inconsistency in agent PRs: 23,247 PRs; high-inconsistency PRs (1.7%) accepted 28.3% vs 80.0%, 3.5x longer to merge; most common type is describing unimplemented changes.
 - https://arxiv.org/abs/2606.18168 (fetched) - "All Smoke, No Alarm": 86,156 test patches from 33,596 agent PRs; 80.2% weak or no oracle signals; strong oracles raise merge odds (OR 1.28).
 - https://prlens.dev/guides/why-ai-pull-requests-wait-longer-for-review (fetched) - Secondary write-up of LinearB numbers; AI PRs 408 vs 157 lines at p75; argues descriptions should explain "what changed and why, in the terms of the system".
 

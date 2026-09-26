@@ -1,7 +1,24 @@
 {
   "name": "pr-decision-log",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Attach a structured decision log from an AI coding agent session to a pull request.",
+  "keywords": [
+    "claude-code",
+    "pull-request",
+    "code-review",
+    "hooks",
+    "ai-agents",
+    "testing"
+  ],
+  "author": "Gerald Chang",
+  "homepage": "https://github.com/GcdZ03/pr-decision-log#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GcdZ03/pr-decision-log.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GcdZ03/pr-decision-log/issues"
+  },
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -22,7 +39,8 @@
     "spike:yield": "node scripts/spike-yield.mjs",
     "spike:evidence": "node scripts/spike-evidence.mjs",
     "spike:summary": "node scripts/spike-summary-yield.mjs",
-    "spike:splice": "node scripts/spike-splice.mjs"
+    "spike:splice": "node scripts/spike-splice.mjs",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

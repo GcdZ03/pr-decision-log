@@ -335,7 +335,7 @@ Options considered:
 | Distribution | `npx pdl`, Claude Code plugin, `npm i -g`; later `bun build --compile` for a single binary (cross-targets for macOS/Linux/Windows) | one binary, Homebrew tap; matches Entire CLI | pip/pipx; version drift across machines | copy files; hard to test |
 | Ecosystem fit | Claude Code plugins and add-reasoning-to-prs are TS; `gh` does the GitHub part | strong CLI story; you would learn it | good for AST work on Python tests only | none |
 | Your toolchain today | Node v26.3.1, npm 11 installed | not installed | 3.14 installed | jq 1.7.1, gh 2.95 installed |
-| Portfolio signal | matches your day job (cloud web app); shows CLI + API + testing discipline | shows range | weaker | none |
+| Portfolio signal | matches the author's day job (cloud web app); shows CLI + API + testing discipline | shows range | weaker | none |
 | Testing | vitest/node:test, fixtures of real hook payloads | go test | pytest | bats |
 
 Decision: **TypeScript on Node, zero runtime dependencies, bundled to one file with esbuild**, published as an npm package and a Claude Code plugin. Reasoning:
