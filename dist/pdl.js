@@ -1625,6 +1625,10 @@ function loadConfig(repoRoot2, userDir = join4(homedir4(), ".config", "pdl")) {
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { readFileSync as readFileSync6 } from "node:fs";
 import { join as join5 } from "node:path";
+process.stdout.on("error", (e) => {
+  if (e.code === "EPIPE") process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
+  throw e;
+});
 function git2(args) {
   const p = spawnSync4("git", args, { encoding: "utf8" });
   return p.status === 0 ? (p.stdout ?? "").trim() : "";

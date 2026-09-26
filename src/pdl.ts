@@ -26,6 +26,17 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * A reader that stops early, like `pdl build | head`, closes the pipe while pdl
+ * is still writing. Unhandled, Node crashes with an EPIPE stack trace. Stop
+ * quietly instead, as `git log | head` does, keeping any failure code already
+ * set: only the printing was cut short, and files are written before output.
+ */
+process.stdout.on('error', (e: NodeJS.ErrnoException) => {
+  if (e.code === 'EPIPE') process.exit(typeof process.exitCode === 'number' ? process.exitCode : 0);
+  throw e;
+});
+
 function git(args: string[]): string {
   const p = spawnSync('git', args, { encoding: 'utf8' });
   return p.status === 0 ? (p.stdout ?? '').trim() : '';

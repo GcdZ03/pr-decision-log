@@ -75,3 +75,24 @@ test('pdl remove with nothing registered says so and succeeds', () => {
     assert.match(r.out, /no pdl hooks/i);
   });
 });
+
+// A reader that stops early, like `pdl build | head`, closes the pipe while
+// pdl is still writing. Node raised that as an unhandled EPIPE and crashed
+// with a stack trace; `git log | head` just stops. Seen during the npm checks.
+
+test('output piped into a reader that stops early ends quietly, not with a stack trace', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdl-epipe-'));
+  try {
+    const big = join(dir, 'big.txt');
+    writeFileSync(big, 'ordinary text, nothing to redact\n'.repeat(200_000));
+
+    const p = spawnSync('bash', ['-c', `set -o pipefail; node "${PDL}" redact-check "${big}" | head -1 >/dev/null`], {
+      encoding: 'utf8',
+    });
+
+    assert.ok(!/EPIPE|Unhandled 'error' event/.test(p.stderr), `crashed on a closed pipe:\n${p.stderr.slice(0, 400)}`);
+    assert.equal(p.status, 0, 'a reader stopping early is not a failure');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
