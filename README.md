@@ -1,6 +1,7 @@
 # pr-decision-log
 
 [![CI](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml/badge.svg)](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pr-decision-log)](https://www.npmjs.com/package/pr-decision-log)
 
 **Status: working, Phase 1 in progress.** Dogfooded on this repository's own pull requests.
 
@@ -100,11 +101,9 @@ Needs Node 22 or newer and the GitHub CLI (`gh`) logged in. Pick **one** route; 
 
 Or from a terminal, `claude plugin marketplace add GcdZ03/pr-decision-log` then `claude plugin install pr-decision-log@pr-decision-log`. Add `--scope project` or `--scope local` to both to limit pdl to one repository.
 
-The plugin installs the hooks only. The `pdl` command for `doctor`, `build` and the rest comes from npm or a clone, below.
+The plugin installs the hooks only. For the `pdl` command without installing anything else, use npx: `npx pr-decision-log doctor`.
 
 ### With npm
-
-*Available once v0.1.0 is published.*
 
 ```bash
 npm install -g pr-decision-log
