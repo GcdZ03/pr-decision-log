@@ -139,3 +139,17 @@ test('pdl registered in both project and user settings warns, because every hook
   assert.match(check.detail, /both/i);
   assert.match(check.remedy ?? '', /remove/i);
 });
+
+test('hooks registered only by the plugin count as registered', () => {
+  const check = find({ ...healthy, hookScopes: ['plugin'], settingsPath: undefined }, 'hooks registered');
+
+  assert.equal(check.status, 'ok');
+  assert.match(check.detail, /plugin/);
+});
+
+test('the plugin plus a settings-file registration is a double registration', () => {
+  const check = find({ ...healthy, hookScopes: ['plugin', 'project'] }, 'hooks registered');
+
+  assert.equal(check.status, 'warn');
+  assert.match(check.detail, /plugin/);
+});

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -96,4 +96,65 @@ export function trustState(
   const entry = (projects as Record<string, { hasTrustDialogAccepted?: unknown }>)[resolve(root)];
   if (!entry) return 'unknown-folder';
   return entry.hasTrustDialogAccepted === true ? 'accepted' : 'not-accepted';
+}
+
+export type PluginHooks = { active: boolean; events: string[] };
+
+const PLUGIN_ID_PREFIX = 'pr-decision-log@';
+
+const readJson = (path: string): Record<string, unknown> => {
+  try {
+    const v: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+};
+
+const real = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
+/**
+ * Whether the pr-decision-log plugin applies to this folder, and which events it hooks.
+ *
+ * Read from the same files a real install writes: `installed_plugins.json`
+ * records each install's scope, plus a `projectPath` for project and local
+ * installs; the matching settings file's `enabledPlugins` switches it on; and
+ * the install's own `hooks/hooks.json` says which events it hooks. Without
+ * this, doctor told plugin users to run `pdl init`, which would have
+ * registered every hook a second time.
+ */
+export function pluginHooks(
+  root: string,
+  installedPath: string = join(homedir(), '.claude', 'plugins', 'installed_plugins.json'),
+  userSettingsPath: string = join(homedir(), '.claude', 'settings.json'),
+): PluginHooks {
+  const plugins = readJson(installedPath)['plugins'];
+  if (typeof plugins !== 'object' || plugins === null) return { active: false, events: [] };
+
+  const settings = [
+    userSettingsPath,
+    join(root, '.claude', 'settings.json'),
+    join(root, '.claude', 'settings.local.json'),
+  ].map(readJson);
+  const enabled = (id: string) =>
+    settings.some((st) => (st['enabledPlugins'] as Record<string, unknown> | undefined)?.[id] === true);
+
+  for (const [id, entries] of Object.entries(plugins as Record<string, unknown>)) {
+    if (!id.startsWith(PLUGIN_ID_PREFIX) || !enabled(id) || !Array.isArray(entries)) continue;
+
+    const entry = (entries as { scope?: string; projectPath?: string; installPath?: string }[]).find(
+      (e) => e.scope === 'user' || (typeof e.projectPath === 'string' && real(e.projectPath) === real(root)),
+    );
+    if (!entry?.installPath) continue;
+
+    const hooks = readJson(join(entry.installPath, 'hooks', 'hooks.json'))['hooks'];
+    return { active: true, events: typeof hooks === 'object' && hooks !== null ? Object.keys(hooks) : [] };
+  }
+  return { active: false, events: [] };
 }

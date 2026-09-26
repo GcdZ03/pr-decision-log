@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { REQUIRED_HOOK_EVENTS } from '../src/doctor/diagnose.ts';
@@ -54,4 +55,30 @@ test('the published package includes the plugin manifest and hooks', () => {
   for (const needed of ['dist', '.claude-plugin', 'hooks']) {
     assert.ok(files.includes(needed), `npm would not ship ${needed}`);
   }
+});
+
+// The plugin route. Claude Code installs plugins from git (installs record a
+// gitCommitSha) and runs no build step, so whatever the hooks execute has to be
+// committed. dist/ was gitignored, so a plugin install registered six hooks
+// pointing at a file that did not exist.
+
+test('the file the plugin hooks run is committed to git', () => {
+  const tracked = execFileSync('git', ['ls-files', '--', 'dist/pdl.js'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  assert.equal(tracked, 'dist/pdl.js', 'dist/pdl.js is not tracked, so a git-based plugin install has no bundle to run');
+});
+
+test('the repository is its own marketplace, listing the plugin at its root', () => {
+  const market = readJson('.claude-plugin/marketplace.json');
+  const plugins = market['plugins'] as { name: string; source: unknown; version?: string }[];
+
+  const entry = plugins.find((p) => p.name === 'pr-decision-log');
+  assert.ok(entry, 'marketplace does not list pr-decision-log');
+  assert.equal(entry.source, './');
+});
+
+test('the marketplace version matches package.json', () => {
+  const plugins = readJson('.claude-plugin/marketplace.json')['plugins'] as { name: string; version?: string }[];
+
+  assert.equal(plugins.find((p) => p.name === 'pr-decision-log')?.version, readJson('package.json')['version']);
 });

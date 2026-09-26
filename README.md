@@ -89,13 +89,40 @@ Both of those were found by running a real agent against a failing test and tell
 
 ## Install
 
-```bash
-npm install && npm run build
-node dist/pdl.js init      # registers six hooks in .claude/settings.json
-node dist/pdl.js doctor    # confirms they are actually firing
+Needs Node 22 or newer and the GitHub CLI (`gh`) logged in. Pick **one** route; `doctor` warns if pdl ends up registered twice.
+
+### As a Claude Code plugin
+
+```
+/plugin marketplace add GcdZ03/pr-decision-log
+/plugin install pr-decision-log@pr-decision-log
 ```
 
-`init` is idempotent, preserves other tools' hooks, and adopts a hand-written `pdl` hook instead of adding a second copy beside it.
+Or from a terminal, `claude plugin marketplace add GcdZ03/pr-decision-log` then `claude plugin install pr-decision-log@pr-decision-log`. Add `--scope project` or `--scope local` to both to limit pdl to one repository.
+
+The plugin installs the hooks only. The `pdl` command for `doctor`, `build` and the rest comes from npm or a clone, below.
+
+### With npm
+
+*Available once v0.1.0 is published.*
+
+```bash
+npm install -g pr-decision-log
+pdl init --user    # every repository, via ~/.claude/settings.json
+pdl doctor
+```
+
+Use `pdl init` without `--user` to register in the current repository's `.claude/settings.json` instead.
+
+### From a clone
+
+```bash
+npm install && npm run build
+node dist/pdl.js init
+node dist/pdl.js doctor
+```
+
+`init` is idempotent, preserves other tools' hooks, and adopts a hand-written `pdl` hook instead of adding a second copy beside it. It warns if the plugin or the other settings file already registers pdl.
 
 **Hooks stay dormant until you trust the folder.** Claude Code holds back hooks from every settings file, including your own global one, until you accept the trust dialog for that directory. A registered-but-dormant install is indistinguishable from a working one if you only read the config, so `doctor` reads the folder's trust flag straight out of Claude Code's own state file:
 
@@ -124,9 +151,13 @@ Note the last line. An earlier version inferred trust from an empty store, and t
 
 Set `PDL_DISABLE=1` to turn recording off entirely.
 
-### Install as a Claude Code plugin
+### How the plugin route works
 
-The repository is also a plugin, so the hooks can be installed without editing any settings file. `.claude-plugin/plugin.json` and `hooks/hooks.json` register the same six events `pdl init` writes, resolved through `${CLAUDE_PLUGIN_ROOT}`. A test asserts the two stay in step, because a plugin that registers a different set than `init` would be a silent difference between two installs of the same tool.
+The repository is its own marketplace: `.claude-plugin/marketplace.json` lists the plugin at the repository root, and both manifests pass `claude plugin validate --strict`. Claude Code installs plugins from git and runs no build step, so the bundle the hooks execute, `dist/pdl.js`, is committed, and CI fails if it no longer matches the source. It was gitignored at first, which meant a plugin install registered six hooks pointing at a file that did not exist.
+
+The plugin registers the same six events `pdl init` writes, and a test keeps the two in step. `doctor` recognises a plugin install from Claude Code's own records (`installed_plugins.json` plus `enabledPlugins`), so a plugin user is not told to run `init` and register everything twice.
+
+Verified end to end: installed at local scope into a scratch project from a git clone of this repository, a headless session there was recorded by the plugin's hooks alone, and `doctor` reported *6 events via the pr-decision-log plugin*.
 
 ## Configuration
 

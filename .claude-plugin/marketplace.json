@@ -1,0 +1,23 @@
+{
+  "name": "pr-decision-log",
+  "description": "Marketplace for pr-decision-log, which attaches a redacted, evidence-first decision log from a Claude Code session to its pull request.",
+  "owner": {
+    "name": "Gerald Chang"
+  },
+  "plugins": [
+    {
+      "name": "pr-decision-log",
+      "source": "./",
+      "description": "Records what the agent ran, failed and edited, flags tests changed right after they failed, and publishes a redacted log to the PR.",
+      "version": "0.1.0",
+      "category": "development",
+      "homepage": "https://github.com/GcdZ03/pr-decision-log",
+      "keywords": [
+        "pull-request",
+        "code-review",
+        "hooks",
+        "testing"
+      ]
+    }
+  ]
+}
