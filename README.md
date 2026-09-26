@@ -3,7 +3,7 @@
 [![CI](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml/badge.svg)](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/pr-decision-log)](https://www.npmjs.com/package/pr-decision-log)
 
-**Status: v0.1.1, early.** Dogfooded on this repository's own pull requests.
+**Status: early.** Dogfooded on this repository's own pull requests.
 
 `pdl` records what an AI coding agent actually did while it worked, and attaches a structured, redacted **decision log** to the resulting pull request. The reviewer gets what ran, what failed, what was edited after what, and a flag on any test that was changed right after that test failed — instead of being, in Addy Osmani's words, "the first human being to ever lay eyes on this code."
 
