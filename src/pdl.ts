@@ -7,14 +7,15 @@ import { render } from './render/render.ts';
 import { publish } from './publish/publish.ts';
 import { autoPublish, FilePublishState } from './publish/auto-publish.ts';
 import { defaultBase, diffAgainst } from './publish/pr-diff.ts';
-import { eventsForBranch, selectForBranch } from './events/branch.ts';
+import { eventsForBranch, selectForBranch, summariseSessions } from './events/branch.ts';
+import type { TimelineEvent } from './events/types.ts';
 import { isDisabled } from './events/handle-hook.ts';
 import { detectPrCreation } from './publish/detect-pr.ts';
 import { diagnose, worstStatus, type Facts } from './doctor/diagnose.ts';
 import { readTranscript } from './extract/transcript.ts';
 import { extractDecisions, type Decision } from './extract/decisions.ts';
 import { findTranscript } from './extract/find-transcript.ts';
-import { mergeHooks, pdlHookEvents } from './doctor/init.ts';
+import { mergeHooks, pdlHookEvents, removeHooks } from './doctor/init.ts';
 import {
   ghStatus, hookCommand, pluginHooks, readSettings, repoRoot, settingsExist, settingsPathFor, trustState, writeSettings,
   type Scope,
@@ -30,9 +31,14 @@ function git(args: string[]): string {
   return p.status === 0 ? (p.stdout ?? '').trim() : '';
 }
 
+/**
+ * The checked-out branch, or '' on a detached HEAD. `symbolic-ref` rather than
+ * `rev-parse --abbrev-ref HEAD`, which fails in a repository with no commits
+ * yet and made a new repo's first session look detached, so its turns were
+ * never recorded.
+ */
 function currentBranch(): string {
-  const b = git(['rev-parse', '--abbrev-ref', 'HEAD']);
-  return b === 'HEAD' ? '' : b;
+  return git(['symbolic-ref', '--short', '-q', 'HEAD']);
 }
 
 function logMeta(branch: string, base: string) {
@@ -253,18 +259,12 @@ function purge(store: EventStore): void {
   process.stdout.write(`removed ${n} recorded session(s)\n`);
 }
 
-function show(store: EventStore, sessionId: string | undefined): void {
-  if (!sessionId) {
-    process.stderr.write('usage: pdl show <session-id>\n');
-    process.exitCode = 2;
-    return;
-  }
-  const events = store.read(sessionId);
+function printTimeline(label: string, events: TimelineEvent[]): void {
   const commands = events.filter((e) => e.kind === 'command');
   const edits = events.filter((e) => e.kind === 'edit');
   const flags = detectTestEditedAfterFailure(events);
 
-  process.stdout.write(`session ${sessionId}\n`);
+  process.stdout.write(`${label}\n`);
   process.stdout.write(`  ${events.length} events: ${commands.length} commands, ${edits.length} edits\n`);
   for (const c of commands) {
     if (c.kind !== 'command') continue;
@@ -276,6 +276,61 @@ function show(store: EventStore, sessionId: string | undefined): void {
   }
   process.stdout.write(`\n  ${flags.length} flag(s):\n`);
   for (const f of flags) process.stdout.write(`  - ${f.code} ${f.file}\n      ${f.detail}\n`);
+}
+
+/** One session's timeline, or with no argument the current branch's, merged across sessions like `build`. */
+function show(store: EventStore, sessionId: string | undefined): void {
+  if (sessionId) {
+    printTimeline(`session ${sessionId}`, store.read(sessionId));
+    return;
+  }
+  const branch = currentBranch();
+  if (!branch) {
+    process.stderr.write('pdl show: detached HEAD; pass a session id (see `pdl sessions`)\n');
+    process.exitCode = 2;
+    return;
+  }
+  const merged = eventsForBranch(store, repoRoot(), branch);
+  const n = merged.sessions.length;
+  printTimeline(`branch ${branch} (${n} session${n === 1 ? '' : 's'})`, merged.events);
+}
+
+const fmtTime = (ms: number): string => {
+  const d = new Date(ms);
+  const pad = (x: number) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+/** Recorded sessions for this repository, newest first; `--all` for every repository. */
+function sessions(store: EventStore, all: boolean): void {
+  const list = summariseSessions(store.sessionsInfo(), store.turns(), all ? undefined : repoRoot());
+  if (list.length === 0) {
+    process.stdout.write(all ? 'no sessions recorded\n' : 'no sessions recorded for this repository (try --all)\n');
+    return;
+  }
+  for (const s of list) {
+    const where = s.branches.length > 0 ? s.branches.join(', ') : '(branch not recorded)';
+    const repo = all && s.repo ? `  ${s.repo}` : '';
+    process.stdout.write(`${s.id}  ${fmtTime(s.lastActivityMs)}  ${String(s.events).padStart(4)} events  ${where}${repo}\n`);
+  }
+}
+
+/** Take pdl's hooks back out of a settings file: the inverse of `init`. */
+function remove(scope: Scope): void {
+  const root = repoRoot();
+  const path = settingsPathFor(scope, root);
+  const { settings, removed } = removeHooks(readSettings(path));
+
+  if (removed === 0) {
+    process.stdout.write(`no pdl hooks in ${path}\n`);
+  } else {
+    writeSettings(path, settings);
+    process.stdout.write(`removed ${removed} pdl hook(s) from ${path}\n`);
+  }
+  if (pluginHooks(root).active) {
+    process.stdout.write('  the pr-decision-log plugin is still active here; remove it with `/plugin uninstall pr-decision-log@pr-decision-log`\n');
+  }
+  process.stdout.write('  recorded sessions are kept; `pdl purge` deletes them\n');
 }
 
 const config = loadConfig(repoRoot());
@@ -305,6 +360,12 @@ switch (command) {
   case 'doctor':
     doctor(store);
     break;
+  case 'sessions':
+    sessions(store, process.argv.includes('--all'));
+    break;
+  case 'remove':
+    remove(process.argv.includes('--user') ? 'user' : 'project');
+    break;
   case 'purge':
     purge(store);
     break;
@@ -312,6 +373,6 @@ switch (command) {
     await redactCheck(arg);
     break;
   default:
-    process.stderr.write('usage: pdl <hook|show|build|publish|init|doctor|purge|redact-check>\n');
+    process.stderr.write('usage: pdl <doctor|init|remove|sessions|show|build|publish|purge|redact-check|hook>\n');
     process.exitCode = 2;
 }

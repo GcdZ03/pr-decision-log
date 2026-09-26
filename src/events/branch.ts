@@ -65,3 +65,32 @@ export function eventsForBranch(store: EventStore, repo: string, branch: string)
   events.sort((a, b) => a.at.localeCompare(b.at));
   return { events, sessions, transcripts, turnsBySession };
 }
+
+export type SessionSummary = {
+  id: string;
+  /** The repo its turns ran in; undefined for a session that has not finished a turn yet. */
+  repo?: string;
+  branches: string[];
+  lastActivityMs: number;
+  events: number;
+};
+
+/**
+ * Recorded sessions, newest first, with where each one worked. Filtering by
+ * repo drops sessions with no turn yet, since their repo is not known.
+ */
+export function summariseSessions(
+  infos: { id: string; mtimeMs: number; events: number }[],
+  turns: Turn[],
+  repo?: string,
+): SessionSummary[] {
+  return infos
+    .map((i) => {
+      const own = turns.filter((t) => t.session === i.id);
+      const branches: string[] = [];
+      for (const t of own) if (!branches.includes(t.branch)) branches.push(t.branch);
+      return { id: i.id, repo: own[own.length - 1]?.repo, branches, lastActivityMs: i.mtimeMs, events: i.events };
+    })
+    .filter((s) => repo === undefined || s.repo === repo)
+    .sort((a, b) => b.lastActivityMs - a.lastActivityMs);
+}

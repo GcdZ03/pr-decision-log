@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeHooks, pdlHookEvents, PDL_MARKER } from '../src/doctor/init.ts';
+import { mergeHooks, pdlHookEvents, removeHooks, PDL_MARKER } from '../src/doctor/init.ts';
 import { REQUIRED_HOOK_EVENTS } from '../src/doctor/diagnose.ts';
 
 const CMD = 'node "$CLAUDE_PROJECT_DIR/dist/pdl.js" hook';
@@ -113,4 +113,50 @@ test("a foreign hook that merely mentions pdl in a path is not adopted", () => {
   const commands = (merged.hooks?.['PostToolUse'] ?? []).flatMap((g) => g.hooks ?? []).map((h) => h.command);
   assert.ok(commands.includes('node /src/pdl-lint/run.js check'), 'a foreign hook was removed');
   assert.equal(commands.length, 2);
+});
+
+// pdl remove: the way back out. Must take exactly what init added.
+
+test('remove takes out every pdl hook init added', () => {
+  const { settings, removed } = removeHooks(mergeHooks({}, CMD));
+
+  assert.equal(removed, 6);
+  assert.deepEqual(pdlHookEvents(settings), []);
+});
+
+test("remove leaves another tool's hooks exactly as they were", () => {
+  const withForeign = mergeHooks({
+    hooks: { PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'prettier --write' }] }] },
+  }, CMD);
+
+  const { settings } = removeHooks(withForeign);
+
+  assert.deepEqual(settings.hooks, {
+    PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'prettier --write' }] }],
+  });
+});
+
+test('remove also takes out a hand-written pdl hook', () => {
+  const { settings, removed } = removeHooks({
+    hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/src/pdl.ts" hook' }] }] },
+  });
+
+  assert.equal(removed, 1);
+  assert.equal(settings.hooks, undefined);
+});
+
+test('remove drops the hooks key when nothing is left, but keeps unrelated settings', () => {
+  const { settings } = removeHooks({ ...mergeHooks({}, CMD), model: 'opus' });
+
+  assert.equal(settings.hooks, undefined);
+  assert.equal(settings['model'], 'opus');
+});
+
+test('remove on settings without pdl changes nothing', () => {
+  const original = { model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'say done' }] }] } };
+
+  const { settings, removed } = removeHooks(original);
+
+  assert.equal(removed, 0);
+  assert.deepEqual(settings, original);
 });

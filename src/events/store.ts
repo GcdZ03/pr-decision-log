@@ -42,6 +42,20 @@ export class EventStore {
     appendFileSync(this.#fileFor(sessionId), `${JSON.stringify(event)}\n`);
   }
 
+  /** Each recorded session's id, last write time, and event count, for `pdl sessions`. */
+  sessionsInfo(): { id: string; mtimeMs: number; events: number }[] {
+    const out: { id: string; mtimeMs: number; events: number }[] = [];
+    for (const f of this.#sessionFiles()) {
+      const id = f.slice(0, -'.jsonl'.length);
+      try {
+        out.push({ id, mtimeMs: statSync(join(this.#dir, f)).mtimeMs, events: this.read(id).length });
+      } catch {
+        // Pruned between listing and reading.
+      }
+    }
+    return out;
+  }
+
   /** Recorded sessions. `pdl doctor` reads this to tell dormant hooks from working ones. */
   sessionCount(): number {
     return this.#sessionFiles().length;

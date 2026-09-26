@@ -88,7 +88,7 @@ function registeredCheck(facts: Facts): Check {
       status: 'warn',
       detail: `registered in ${where}, so every hook fires ${facts.hookScopes.length} times`,
       remedy:
-        'Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or delete the pdl entries from the settings file.',
+        'Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or run `pdl remove` (add `--user` for ~/.claude/settings.json).',
     };
   }
   if (missing.length > 0) {
