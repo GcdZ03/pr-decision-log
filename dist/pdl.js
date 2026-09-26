@@ -1036,6 +1036,11 @@ function detectPrCreation(event) {
 }
 
 // src/doctor/diagnose.ts
+var SCOPE_NAME = {
+  project: "this repo's .claude/settings.json",
+  user: "~/.claude/settings.json",
+  plugin: "the pr-decision-log plugin"
+};
 var MIN_NODE_MAJOR = 22;
 var REQUIRED_HOOK_EVENTS = [
   "PreToolUse",
@@ -1068,16 +1073,18 @@ function registeredCheck(facts) {
     return {
       name: "hooks registered",
       status: "fail",
-      detail: "no pdl hooks found in any settings file",
-      remedy: "Run `pdl init` in this repository."
+      detail: "no pdl hooks found in any settings file or installed plugin",
+      remedy: "Install the plugin, or run `pdl init` in this repository."
     };
   }
   if (facts.hookScopes.length > 1) {
+    const names = facts.hookScopes.map((s) => SCOPE_NAME[s]);
+    const where2 = names.length === 2 ? `both ${names[0]} and ${names[1]}` : names.join(", ");
     return {
       name: "hooks registered",
       status: "warn",
-      detail: "registered in both project and user settings, so every hook fires twice",
-      remedy: "Events are de-duplicated when read, but each turn still runs two publishes. Remove one: delete the pdl entries from ~/.claude/settings.json, or from this repo's .claude/settings.json."
+      detail: `registered in ${where2}, so every hook fires ${facts.hookScopes.length} times`,
+      remedy: "Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or delete the pdl entries from the settings file."
     };
   }
   if (missing.length > 0) {
@@ -1088,10 +1095,11 @@ function registeredCheck(facts) {
       remedy: "Run `pdl init` to add the missing events."
     };
   }
+  const where = facts.hookScopes[0] === "plugin" ? SCOPE_NAME.plugin : facts.settingsPath ?? "settings";
   return {
     name: "hooks registered",
     status: "ok",
-    detail: `${facts.hookEvents.length} events in ${facts.settingsPath ?? "settings"}`
+    detail: `${facts.hookEvents.length} events via ${where}`
   };
 }
 function firingCheck(facts) {
@@ -1382,7 +1390,7 @@ function mergeHooks(settings, command2) {
 }
 
 // src/doctor/settings.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, realpathSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join3, resolve as resolve2 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
@@ -1436,6 +1444,42 @@ function trustState(root, statePath = join3(homedir3(), ".claude.json")) {
   if (!entry) return "unknown-folder";
   return entry.hasTrustDialogAccepted === true ? "accepted" : "not-accepted";
 }
+var PLUGIN_ID_PREFIX = "pr-decision-log@";
+var readJson = (path) => {
+  try {
+    const v = JSON.parse(readFileSync4(path, "utf8"));
+    return typeof v === "object" && v !== null ? v : {};
+  } catch {
+    return {};
+  }
+};
+var real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve2(p);
+  }
+};
+function pluginHooks(root, installedPath = join3(homedir3(), ".claude", "plugins", "installed_plugins.json"), userSettingsPath = join3(homedir3(), ".claude", "settings.json")) {
+  const plugins = readJson(installedPath)["plugins"];
+  if (typeof plugins !== "object" || plugins === null) return { active: false, events: [] };
+  const settings = [
+    userSettingsPath,
+    join3(root, ".claude", "settings.json"),
+    join3(root, ".claude", "settings.local.json")
+  ].map(readJson);
+  const enabled = (id) => settings.some((st) => st["enabledPlugins"]?.[id] === true);
+  for (const [id, entries] of Object.entries(plugins)) {
+    if (!id.startsWith(PLUGIN_ID_PREFIX) || !enabled(id) || !Array.isArray(entries)) continue;
+    const entry = entries.find(
+      (e) => e.scope === "user" || typeof e.projectPath === "string" && real(e.projectPath) === real(root)
+    );
+    if (!entry?.installPath) continue;
+    const hooks = readJson(join3(entry.installPath, "hooks", "hooks.json"))["hooks"];
+    return { active: true, events: typeof hooks === "object" && hooks !== null ? Object.keys(hooks) : [] };
+  }
+  return { active: false, events: [] };
+}
 
 // src/config/config.ts
 import { readFileSync as readFileSync5 } from "node:fs";
@@ -1451,7 +1495,7 @@ var DEFAULT_CONFIG = {
 };
 var PUBLISH_MODES = ["body", "comment"];
 var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function readJson(path, problems) {
+function readJson2(path, problems) {
   let text;
   try {
     text = readFileSync5(path, "utf8");
@@ -1535,8 +1579,8 @@ function merge(base, raw, problems) {
 }
 function loadConfig(repoRoot2, userDir = join4(homedir4(), ".config", "pdl")) {
   const problems = [];
-  const user = readJson(join4(userDir, "config.json"), problems);
-  const repo = readJson(join4(repoRoot2, "pdl.config.json"), problems);
+  const user = readJson2(join4(userDir, "config.json"), problems);
+  const repo = readJson2(join4(repoRoot2, "pdl.config.json"), problems);
   return merge(merge(DEFAULT_CONFIG, user, problems), repo, problems);
 }
 
@@ -1663,6 +1707,11 @@ function init(scope) {
 `);
   process.stdout.write(`  registered ${pdlHookEvents(merged).length} hook events
 `);
+  if (pluginHooks(root).active) {
+    process.stdout.write(
+      "  warning: the pr-decision-log plugin is already active here; every hook will fire twice. Uninstall the plugin or undo this.\n"
+    );
+  }
   const other = scope === "user" ? "project" : "user";
   if (pdlHookEvents(readSettings(settingsPathFor(other, root))).length > 0) {
     process.stdout.write(
@@ -1681,7 +1730,8 @@ function doctor(store2) {
   const userPath = settingsPathFor("user", root);
   const project = readSettings(projectPath);
   const user = readSettings(userPath);
-  const events = [.../* @__PURE__ */ new Set([...pdlHookEvents(project), ...pdlHookEvents(user)])];
+  const plugin = pluginHooks(root);
+  const events = [.../* @__PURE__ */ new Set([...pdlHookEvents(project), ...pdlHookEvents(user), ...plugin.events])];
   const facts = {
     nodeVersion: process.version,
     hookEvents: events,
@@ -1693,7 +1743,8 @@ function doctor(store2) {
     trust: trustState(root),
     hookScopes: [
       ...pdlHookEvents(project).length > 0 ? ["project"] : [],
-      ...pdlHookEvents(user).length > 0 ? ["user"] : []
+      ...pdlHookEvents(user).length > 0 ? ["user"] : [],
+      ...plugin.active ? ["plugin"] : []
     ]
   };
   const checks = diagnose(facts);

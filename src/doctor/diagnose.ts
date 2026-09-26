@@ -21,9 +21,17 @@ export interface Facts {
   configProblems: string[];
   /** This folder's trust record in Claude Code's own state file. */
   trust: TrustState;
-  /** Settings files that register pdl hooks. */
-  hookScopes: ('project' | 'user')[];
+  /** Where pdl hooks are registered: settings files, or an installed plugin. */
+  hookScopes: HookScope[];
 }
+
+export type HookScope = 'project' | 'user' | 'plugin';
+
+const SCOPE_NAME: Record<HookScope, string> = {
+  project: "this repo's .claude/settings.json",
+  user: '~/.claude/settings.json',
+  plugin: 'the pr-decision-log plugin',
+};
 
 export type TrustState = 'accepted' | 'not-accepted' | 'unknown-folder' | 'unreadable';
 
@@ -68,17 +76,19 @@ function registeredCheck(facts: Facts): Check {
     return {
       name: 'hooks registered',
       status: 'fail',
-      detail: 'no pdl hooks found in any settings file',
-      remedy: 'Run `pdl init` in this repository.',
+      detail: 'no pdl hooks found in any settings file or installed plugin',
+      remedy: 'Install the plugin, or run `pdl init` in this repository.',
     };
   }
   if (facts.hookScopes.length > 1) {
+    const names = facts.hookScopes.map((s) => SCOPE_NAME[s]);
+    const where = names.length === 2 ? `both ${names[0]} and ${names[1]}` : names.join(', ');
     return {
       name: 'hooks registered',
       status: 'warn',
-      detail: 'registered in both project and user settings, so every hook fires twice',
+      detail: `registered in ${where}, so every hook fires ${facts.hookScopes.length} times`,
       remedy:
-        'Events are de-duplicated when read, but each turn still runs two publishes. Remove one: delete the pdl entries from ~/.claude/settings.json, or from this repo\'s .claude/settings.json.',
+        'Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or delete the pdl entries from the settings file.',
     };
   }
   if (missing.length > 0) {
@@ -89,10 +99,11 @@ function registeredCheck(facts: Facts): Check {
       remedy: 'Run `pdl init` to add the missing events.',
     };
   }
+  const where = facts.hookScopes[0] === 'plugin' ? SCOPE_NAME.plugin : facts.settingsPath ?? 'settings';
   return {
     name: 'hooks registered',
     status: 'ok',
-    detail: `${facts.hookEvents.length} events in ${facts.settingsPath ?? 'settings'}`,
+    detail: `${facts.hookEvents.length} events via ${where}`,
   };
 }
 

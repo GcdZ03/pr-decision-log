@@ -16,7 +16,7 @@ import { extractDecisions, type Decision } from './extract/decisions.ts';
 import { findTranscript } from './extract/find-transcript.ts';
 import { mergeHooks, pdlHookEvents } from './doctor/init.ts';
 import {
-  ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, trustState, writeSettings,
+  ghStatus, hookCommand, pluginHooks, readSettings, repoRoot, settingsExist, settingsPathFor, trustState, writeSettings,
   type Scope,
 } from './doctor/settings.ts';
 import { loadConfig } from './config/config.ts';
@@ -173,6 +173,12 @@ function init(scope: Scope): void {
   process.stdout.write(`${existed ? 'updated' : 'created'} ${path}\n`);
   process.stdout.write(`  registered ${pdlHookEvents(merged).length} hook events\n`);
 
+  if (pluginHooks(root).active) {
+    process.stdout.write(
+      '  warning: the pr-decision-log plugin is already active here; every hook will fire twice. Uninstall the plugin or undo this.\n',
+    );
+  }
+
   const other = scope === 'user' ? 'project' : 'user';
   if (pdlHookEvents(readSettings(settingsPathFor(other, root))).length > 0) {
     process.stdout.write(
@@ -192,7 +198,8 @@ function doctor(store: EventStore): void {
   const userPath = settingsPathFor('user', root);
   const project = readSettings(projectPath);
   const user = readSettings(userPath);
-  const events = [...new Set([...pdlHookEvents(project), ...pdlHookEvents(user)])];
+  const plugin = pluginHooks(root);
+  const events = [...new Set([...pdlHookEvents(project), ...pdlHookEvents(user), ...plugin.events])];
 
   const facts: Facts = {
     nodeVersion: process.version,
@@ -206,6 +213,7 @@ function doctor(store: EventStore): void {
     hookScopes: [
       ...(pdlHookEvents(project).length > 0 ? ['project' as const] : []),
       ...(pdlHookEvents(user).length > 0 ? ['user' as const] : []),
+      ...(plugin.active ? ['plugin' as const] : []),
     ],
   };
 
