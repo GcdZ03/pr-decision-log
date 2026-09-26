@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventStore } from '../src/events/store.ts';
-import { selectForBranch, sessionsForBranch, eventsForBranch, type Turn } from '../src/events/branch.ts';
+import { selectForBranch, sessionsForBranch, eventsForBranch, summariseSessions, type Turn } from '../src/events/branch.ts';
 import type { TimelineEvent } from '../src/events/types.ts';
 
 const at = (m: number) => `2026-09-26T10:${String(m).padStart(2, '0')}:00.000Z`;
@@ -96,5 +96,49 @@ test('turn records past retention are pruned with their sessions', () => {
     store.prune(30, Date.now());
 
     assert.deepEqual(store.turns().map((t) => t.session), ['new']);
+  });
+});
+
+// pdl sessions: session ids were needed by `show` and `publish` but nothing
+// said how to find one.
+
+const info = (id: string, lastMs: number, events = 1) => ({ id, mtimeMs: lastMs, events });
+
+test('sessions are listed newest first, with the branches they worked on', () => {
+  const list = summariseSessions(
+    [info('old', 1000), info('new', 5000)],
+    [turn('old', 'main', 1), turn('new', 'feat', 2), turn('new', 'feat', 3), turn('new', 'fix', 4)],
+  );
+
+  assert.deepEqual(list.map((s) => s.id), ['new', 'old']);
+  assert.deepEqual(list[0]?.branches, ['feat', 'fix']);
+});
+
+test('filtered to a repo, sessions from other repos are left out', () => {
+  const list = summariseSessions(
+    [info('here', 1), info('there', 2)],
+    [turn('here', 'feat', 1, '/r'), turn('there', 'feat', 1, '/other')],
+    '/r',
+  );
+
+  assert.deepEqual(list.map((s) => s.id), ['here']);
+});
+
+test('a session with no turn yet is listed only when not filtering, since its repo is unknown', () => {
+  const infos = [info('fresh', 1)];
+
+  assert.deepEqual(summariseSessions(infos, [], '/r'), []);
+  assert.equal(summariseSessions(infos, [])[0]?.repo, undefined);
+});
+
+test('the store reports each session with its event count', () => {
+  withStore((store) => {
+    store.append('s1', ev('a', 1));
+    store.append('s1', ev('b', 2));
+
+    const infos = store.sessionsInfo();
+    assert.equal(infos.length, 1);
+    assert.equal(infos[0]?.id, 's1');
+    assert.equal(infos[0]?.events, 2);
   });
 });

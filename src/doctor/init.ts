@@ -94,3 +94,33 @@ export function mergeHooks(settings: Settings, command: string): Settings {
 
   return { ...settings, hooks };
 }
+
+/**
+ * The inverse of `mergeHooks`: take out every pdl hook, marked or hand-written,
+ * and leave everything else as found. Groups and events left empty are dropped,
+ * and so is the `hooks` key itself if nothing remains, so a settings file that
+ * only ever held pdl's hooks goes back to how it was before `init`.
+ */
+export function removeHooks(settings: Settings): { settings: Settings; removed: number } {
+  if (!settings.hooks) return { settings, removed: 0 };
+
+  let removed = 0;
+  const hooks: Record<string, HookGroup[]> = {};
+
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    const kept = groups
+      .map((g) => {
+        const entries = g.hooks ?? [];
+        const others = entries.filter((h) => !isPdlEntry(h));
+        removed += entries.length - others.length;
+        return { ...g, hooks: others };
+      })
+      .filter((g) => g.hooks.length > 0);
+    if (kept.length > 0) hooks[event] = kept;
+  }
+
+  if (removed === 0) return { settings, removed: 0 };
+
+  const { hooks: _dropped, ...rest } = settings;
+  return { settings: Object.keys(hooks).length > 0 ? { ...rest, hooks } : rest, removed };
+}

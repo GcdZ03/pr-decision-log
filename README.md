@@ -3,36 +3,47 @@
 [![CI](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml/badge.svg)](https://github.com/GcdZ03/pr-decision-log/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/pr-decision-log)](https://www.npmjs.com/package/pr-decision-log)
 
-**Status: working, Phase 1 in progress.** Dogfooded on this repository's own pull requests.
+**Status: v0.1.0, early.** Dogfooded on this repository's own pull requests.
 
 `pdl` records what an AI coding agent actually did while it worked, and attaches a structured, redacted **decision log** to the resulting pull request. The reviewer gets what ran, what failed, what was edited after what, and a flag on any test that was changed right after that test failed — instead of being, in Addy Osmani's words, "the first human being to ever lay eyes on this code."
 
 It installs as Claude Code hooks and publishes on its own. There is no step you have to remember.
 
+## Quick start
+
+```bash
+npm install -g pr-decision-log   # needs Node 22+ and a logged-in `gh`
+pdl init --user                  # hooks for every repository
+pdl doctor                       # checks the install; follow any remedy it prints
+```
+
+Then open Claude Code in a repository, accept the trust prompt, and work as usual. Once the branch has a pull request, the log appears at the bottom of its description. [Install](#install) covers the plugin and clone routes, and [Using it](#using-it) covers what happens next.
+
 ## What a published log looks like
 
-This is real output, from this repository's PR #3:
+Real output, unedited, from a scratch repository where an agent was told to make a failing test pass *without touching the code*. It declined to change the expected values, and marked the test `todo` instead, which keeps it running but stops its failure from failing the suite:
 
 ```markdown
 ## Decision log
 
-*Recorded automatically from the agent session on `phase1-install-autopublish`.
-Everything below is observed from tool events, not the model's self-report.*
+*Recorded automatically from the agent session on `agent-change`. Everything below is observed from tool events, not the model's self-report.*
 
 ### Flags
-- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited after `npm test` failed and
-  before it passed again; assertion count 1 -> 0.
+- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at 2026-09-26T02:31:10.374Z, after `npm test 2>&1 | tail -30; cat sum.js sum.test.js package.json` failed at 2026-09-26T02:31:00.491Z and before it passed again.
+- **TEST_SKIPPED** `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
 
 ### Verification (recorded)
+
 | When | Command | Result |
 | --- | --- | --- |
-| 06:26 | `npm test 2>&1 \| tail -40` | pass |
+| 02:31 | `npm test 2>&1 \| tail -30; cat sum.js sum.test.js package.json` | fail |
+| 02:31 | `npm test 2>&1 \| tail -30` | pass |
 
-### Decisions
-- Rather than persisting the PR number, I'll re-derive it from the current
-  branch, which removes a state file entirely. *(stated)*
-- Integration: Merge to main locally *(confirmed by a human)*
+### Changes
+- `sum.test.js` - 1 edit (test)
 ```
+
+When the session contains them, **Decisions**, **Assumptions** and **Open items** sections follow: questions you answered, marked *(confirmed by a human)*, and sentences where the agent explained a choice, marked *(stated)*. On most pull requests there are none, and the sections are left out rather than shown empty.
 
 ## The finding that shaped it
 
@@ -81,12 +92,7 @@ That run also found two recall gaps, now fixed: Swift Testing's `@Test` was invi
 
 **Piped test runs.** `npm test | tail -30` exits 0 however the tests went, because a pipeline takes its last command's status, and Claude Code reports that as success. Recorded as-is, it made `TEST_EDITED_AFTER_FAILURE` impossible to trigger for one of the most common ways agents run tests. When a test command's exit status can be masked (`|`, `||`, `;`), the runner's own output is read instead: summary lines for node:test, jest, vitest, mocha, pytest, go, cargo, XCTest and Swift Testing, with assertion-error markers as a fallback when `tail` cut the summary off.
 
-Both of those were found by running a real agent against a failing test and telling it to make the test pass without touching the code. It declined to bend the expected values — and marked the test `todo` instead, which in node:test keeps it running while its failure no longer fails the suite. Before these fixes that session produced no flags at all. It now produces:
-
-```
-- TEST_EDITED_AFTER_FAILURE `sum.test.js` Edited after `npm test 2>&1 | tail -30` failed and before it passed again.
-- TEST_SKIPPED `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
-```
+Both of those were found by running a real agent against a failing test and telling it to make the test pass without touching the code. It declined to bend the expected values — and marked the test `todo` instead, which in node:test keeps it running while its failure no longer fails the suite. Before these fixes that session produced no flags at all. It now produces the two flags in [the example at the top](#what-a-published-log-looks-like).
 
 ## Install
 
@@ -123,10 +129,22 @@ node dist/pdl.js doctor
 
 `init` is idempotent, preserves other tools' hooks, and adopts a hand-written `pdl` hook instead of adding a second copy beside it. It warns if the plugin or the other settings file already registers pdl.
 
+**Platforms:** developed on macOS; CI runs on Linux with Node 22 and 24. Windows is untested.
+
+### How the plugin route works
+
+The repository is its own marketplace: `.claude-plugin/marketplace.json` lists the plugin at the repository root, and both manifests pass `claude plugin validate --strict`. Claude Code installs plugins from git and runs no build step, so the bundle the hooks execute, `dist/pdl.js`, is committed, and CI fails if it no longer matches the source. It was gitignored at first, which meant a plugin install registered six hooks pointing at a file that did not exist.
+
+The plugin registers the same six events `pdl init` writes, and a test keeps the two in step. `doctor` recognises a plugin install from Claude Code's own records (`installed_plugins.json` plus `enabledPlugins`), so a plugin user is not told to run `init` and register everything twice.
+
+Verified end to end: installed at local scope into a scratch project from a git clone of this repository, a headless session there was recorded by the plugin's hooks alone, and `doctor` reported *6 events via the pr-decision-log plugin*.
+
+### After installing, whichever route: trust the folder
+
 **Hooks stay dormant until you trust the folder.** Claude Code holds back hooks from every settings file, including your own global one, until you accept the trust dialog for that directory. A registered-but-dormant install is indistinguishable from a working one if you only read the config, so `doctor` reads the folder's trust flag straight out of Claude Code's own state file:
 
 ```
-[ok  ] hooks registered: 6 events in .claude/settings.json
+[ok  ] hooks registered: 6 events via .claude/settings.json
 [warn] folder trust: folder never opened interactively; hooks fire only in headless `claude -p` runs
        -> Run `claude` in this folder, accept the trust dialog, then `/hooks` to confirm the events show a count.
 [ok  ] hooks firing: 5 session(s) recorded
@@ -136,27 +154,57 @@ Note the last line. An earlier version inferred trust from an empty store, and t
 
 **This repository runs its own hooks.** `.claude/settings.json` registers pdl on itself, so if you open a clone in Claude Code and accept the trust dialog, your sessions here are recorded to `~/.local/share/pdl` and the log may be published to any pull request you open from that branch. Decline the dialog, or set `PDL_DISABLE=1`, to opt out.
 
+## Using it
+
+1. **Work in Claude Code as usual.** Every command, test run and edit is recorded locally in `~/.local/share/pdl`. Nothing is sent anywhere yet.
+2. **Open a pull request** for your branch, with `gh pr create` (the agent can do it) or on the GitHub website.
+3. **The log appears at the bottom of the PR description.** With `gh pr create` it appears straight away; with a PR opened on the web, at the end of your next turn within five minutes. Your own description is never touched: the log lives between hidden markers below it.
+4. **It keeps itself up to date.** At the end of each agent turn the log is rebuilt and the PR is updated if anything changed. Work spread over several sessions, or resumed the next day, lands in the same log.
+
+To see the log before there is a PR, run `pdl build` on the branch. To see the raw recorded timeline, run `pdl show`. Set `PDL_DISABLE=1` to stop recording for a session.
+
 ## Commands
 
 | Command | Does |
 | --- | --- |
 | `pdl doctor` | Seven checks on the install, with a remedy for each failure |
-| `pdl init [--user]` | Register hooks in project or user settings |
-| `pdl show <session>` | Print the recorded timeline |
-| `pdl build [session]` | Render the log to stdout: the current branch's merged log, or one session's |
-| `pdl publish <session> <pr>` | Publish to a pull request by hand |
+| `pdl init [--user]` | Register hooks in this repository's `.claude/settings.json`, or with `--user` in `~/.claude/settings.json` |
+| `pdl remove [--user]` | Take pdl's hooks back out of that settings file, leaving other hooks alone |
+| `pdl build [session]` | Print the log without publishing: the current branch's, or one session's |
+| `pdl show [session]` | Print the recorded timeline and any flags: the current branch's, or one session's |
+| `pdl sessions [--all]` | List recorded sessions for this repository, newest first, with their ids and branches |
+| `pdl publish <session> <pr>` | Publish one session's log to a pull request by hand |
 | `pdl purge` | Delete every recorded session |
 | `pdl redact-check [file]` | Run text through the redactor and report what matched |
 
-Set `PDL_DISABLE=1` to turn recording off entirely.
+Session ids for `show`, `build` and `publish` come from `pdl sessions`.
 
-### How the plugin route works
+## Troubleshooting
 
-The repository is its own marketplace: `.claude-plugin/marketplace.json` lists the plugin at the repository root, and both manifests pass `claude plugin validate --strict`. Claude Code installs plugins from git and runs no build step, so the bundle the hooks execute, `dist/pdl.js`, is committed, and CI fails if it no longer matches the source. It was gitignored at first, which meant a plugin install registered six hooks pointing at a file that did not exist.
+**The log isn't showing up on my pull request.** Run `pdl doctor` first; it names the cause and the fix for most of these.
 
-The plugin registers the same six events `pdl init` writes, and a test keeps the two in step. `doctor` recognises a plugin install from Claude Code's own records (`installed_plugins.json` plus `enabledPlugins`), so a plugin user is not told to run `init` and register everything twice.
+| Cause | Fix |
+| --- | --- |
+| The folder hasn't been trusted | Run `claude` there and accept the trust prompt (`doctor` reports this as *folder trust*) |
+| `gh` isn't installed or logged in | `gh auth login` |
+| The branch has no pull request yet | Open one; nothing publishes without a PR |
+| The PR was opened on the website | It is picked up within five minutes, at the end of a turn |
+| `PDL_DISABLE` is set | Unset it |
+| A detached HEAD | Check out the branch; there is no PR to publish to |
 
-Verified end to end: installed at local scope into a scratch project from a git clone of this repository, a headless session there was recorded by the plugin's hooks alone, and `doctor` reported *6 events via the pr-decision-log plugin*.
+**`doctor` says pdl is registered twice.** For example, the plugin and a settings file. Events are de-duplicated, so the log is still right, but each turn does the work twice. Keep one: uninstall the plugin, or run `pdl remove`.
+
+**I deleted the log from a PR by hand and it hasn't come back.** It returns the next time the log changes.
+
+## Uninstall
+
+```bash
+pdl remove --user                 # or `pdl remove` in a repository you ran `pdl init` in
+pdl purge                         # optional: delete everything recorded
+npm uninstall -g pr-decision-log
+```
+
+Plugin route: `/plugin uninstall pr-decision-log@pr-decision-log`, and `/plugin marketplace remove pr-decision-log` if you added the marketplace only for this. A log already published to a pull request stays there until you delete it from the PR description.
 
 ## Configuration
 

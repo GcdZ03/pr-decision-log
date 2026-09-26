@@ -27,6 +27,18 @@ var EventStore = class {
     appendFileSync(this.#fileFor(sessionId), `${JSON.stringify(event)}
 `);
   }
+  /** Each recorded session's id, last write time, and event count, for `pdl sessions`. */
+  sessionsInfo() {
+    const out = [];
+    for (const f of this.#sessionFiles()) {
+      const id = f.slice(0, -".jsonl".length);
+      try {
+        out.push({ id, mtimeMs: statSync(join(this.#dir, f)).mtimeMs, events: this.read(id).length });
+      } catch {
+      }
+    }
+    return out;
+  }
   /** Recorded sessions. `pdl doctor` reads this to tell dormant hooks from working ones. */
   sessionCount() {
     return this.#sessionFiles().length;
@@ -1008,11 +1020,11 @@ function sessionsForBranch(turns, repo, branch) {
 }
 function eventsForBranch(store2, repo, branch) {
   const all = store2.turns().filter((t) => t.repo === repo);
-  const sessions = sessionsForBranch(all, repo, branch);
+  const sessions2 = sessionsForBranch(all, repo, branch);
   const events = [];
   const transcripts = /* @__PURE__ */ new Map();
   const turnsBySession = /* @__PURE__ */ new Map();
-  for (const session of sessions) {
+  for (const session of sessions2) {
     const turns = all.filter((t) => t.session === session).sort((a, b) => a.at.localeCompare(b.at));
     turnsBySession.set(session, turns);
     const transcript = [...turns].reverse().find((t) => t.transcript)?.transcript;
@@ -1020,7 +1032,15 @@ function eventsForBranch(store2, repo, branch) {
     events.push(...selectForBranch(store2.read(session), turns, branch));
   }
   events.sort((a, b) => a.at.localeCompare(b.at));
-  return { events, sessions, transcripts, turnsBySession };
+  return { events, sessions: sessions2, transcripts, turnsBySession };
+}
+function summariseSessions(infos, turns, repo) {
+  return infos.map((i) => {
+    const own = turns.filter((t) => t.session === i.id);
+    const branches = [];
+    for (const t of own) if (!branches.includes(t.branch)) branches.push(t.branch);
+    return { id: i.id, repo: own[own.length - 1]?.repo, branches, lastActivityMs: i.mtimeMs, events: i.events };
+  }).filter((s) => repo === void 0 || s.repo === repo).sort((a, b) => b.lastActivityMs - a.lastActivityMs);
 }
 
 // src/publish/detect-pr.ts
@@ -1084,7 +1104,7 @@ function registeredCheck(facts) {
       name: "hooks registered",
       status: "warn",
       detail: `registered in ${where2}, so every hook fires ${facts.hookScopes.length} times`,
-      remedy: "Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or delete the pdl entries from the settings file."
+      remedy: "Events are de-duplicated when read, but each turn still runs extra publishes. Remove all but one: uninstall the plugin, or run `pdl remove` (add `--user` for ~/.claude/settings.json)."
     };
   }
   if (missing.length > 0) {
@@ -1388,6 +1408,23 @@ function mergeHooks(settings, command2) {
   }
   return { ...settings, hooks };
 }
+function removeHooks(settings) {
+  if (!settings.hooks) return { settings, removed: 0 };
+  let removed = 0;
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    const kept = groups.map((g) => {
+      const entries = g.hooks ?? [];
+      const others = entries.filter((h) => !isPdlEntry(h));
+      removed += entries.length - others.length;
+      return { ...g, hooks: others };
+    }).filter((g) => g.hooks.length > 0);
+    if (kept.length > 0) hooks[event] = kept;
+  }
+  if (removed === 0) return { settings, removed: 0 };
+  const { hooks: _dropped, ...rest } = settings;
+  return { settings: Object.keys(hooks).length > 0 ? { ...rest, hooks } : rest, removed };
+}
 
 // src/doctor/settings.ts
 import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, realpathSync, writeFileSync as writeFileSync3 } from "node:fs";
@@ -1593,8 +1630,7 @@ function git2(args) {
   return p.status === 0 ? (p.stdout ?? "").trim() : "";
 }
 function currentBranch() {
-  const b = git2(["rev-parse", "--abbrev-ref", "HEAD"]);
-  return b === "HEAD" ? "" : b;
+  return git2(["symbolic-ref", "--short", "-q", "HEAD"]);
 }
 function logMeta(branch, base) {
   return {
@@ -1777,17 +1813,11 @@ function purge(store2) {
   process.stdout.write(`removed ${n} recorded session(s)
 `);
 }
-function show(store2, sessionId) {
-  if (!sessionId) {
-    process.stderr.write("usage: pdl show <session-id>\n");
-    process.exitCode = 2;
-    return;
-  }
-  const events = store2.read(sessionId);
+function printTimeline(label, events) {
   const commands = events.filter((e) => e.kind === "command");
   const edits = events.filter((e) => e.kind === "edit");
   const flags = detectTestEditedAfterFailure(events);
-  process.stdout.write(`session ${sessionId}
+  process.stdout.write(`${label}
 `);
   process.stdout.write(`  ${events.length} events: ${commands.length} commands, ${edits.length} edits
 `);
@@ -1806,6 +1836,56 @@ function show(store2, sessionId) {
   for (const f of flags) process.stdout.write(`  - ${f.code} ${f.file}
       ${f.detail}
 `);
+}
+function show(store2, sessionId) {
+  if (sessionId) {
+    printTimeline(`session ${sessionId}`, store2.read(sessionId));
+    return;
+  }
+  const branch = currentBranch();
+  if (!branch) {
+    process.stderr.write("pdl show: detached HEAD; pass a session id (see `pdl sessions`)\n");
+    process.exitCode = 2;
+    return;
+  }
+  const merged = eventsForBranch(store2, repoRoot(), branch);
+  const n = merged.sessions.length;
+  printTimeline(`branch ${branch} (${n} session${n === 1 ? "" : "s"})`, merged.events);
+}
+var fmtTime = (ms) => {
+  const d = new Date(ms);
+  const pad = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+function sessions(store2, all) {
+  const list = summariseSessions(store2.sessionsInfo(), store2.turns(), all ? void 0 : repoRoot());
+  if (list.length === 0) {
+    process.stdout.write(all ? "no sessions recorded\n" : "no sessions recorded for this repository (try --all)\n");
+    return;
+  }
+  for (const s of list) {
+    const where = s.branches.length > 0 ? s.branches.join(", ") : "(branch not recorded)";
+    const repo = all && s.repo ? `  ${s.repo}` : "";
+    process.stdout.write(`${s.id}  ${fmtTime(s.lastActivityMs)}  ${String(s.events).padStart(4)} events  ${where}${repo}
+`);
+  }
+}
+function remove(scope) {
+  const root = repoRoot();
+  const path = settingsPathFor(scope, root);
+  const { settings, removed } = removeHooks(readSettings(path));
+  if (removed === 0) {
+    process.stdout.write(`no pdl hooks in ${path}
+`);
+  } else {
+    writeSettings(path, settings);
+    process.stdout.write(`removed ${removed} pdl hook(s) from ${path}
+`);
+  }
+  if (pluginHooks(root).active) {
+    process.stdout.write("  the pr-decision-log plugin is still active here; remove it with `/plugin uninstall pr-decision-log@pr-decision-log`\n");
+  }
+  process.stdout.write("  recorded sessions are kept; `pdl purge` deletes them\n");
 }
 var config = loadConfig(repoRoot());
 var storeRoot = process.env["PDL_HOME"] ?? config.store.dir;
@@ -1831,6 +1911,12 @@ switch (command) {
   case "doctor":
     doctor(store);
     break;
+  case "sessions":
+    sessions(store, process.argv.includes("--all"));
+    break;
+  case "remove":
+    remove(process.argv.includes("--user") ? "user" : "project");
+    break;
   case "purge":
     purge(store);
     break;
@@ -1838,6 +1924,6 @@ switch (command) {
     await redactCheck(arg);
     break;
   default:
-    process.stderr.write("usage: pdl <hook|show|build|publish|init|doctor|purge|redact-check>\n");
+    process.stderr.write("usage: pdl <doctor|init|remove|sessions|show|build|publish|purge|redact-check|hook>\n");
     process.exitCode = 2;
 }
