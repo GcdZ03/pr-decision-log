@@ -19,7 +19,11 @@ export interface Facts {
   env: NodeJS.ProcessEnv;
   /** Settings the config loader refused. Empty on a clean config. */
   configProblems: string[];
+  /** This folder's trust record in Claude Code's own state file. */
+  trust: TrustState;
 }
+
+export type TrustState = 'accepted' | 'not-accepted' | 'unknown-folder' | 'unreadable';
 
 const MIN_NODE_MAJOR = 22;
 
@@ -154,10 +158,44 @@ function configCheck(facts: Facts): Check {
       };
 }
 
+const TRUST_REMEDY =
+  'Run `claude` in this folder, accept the trust dialog, then `/hooks` to confirm the events show a count.';
+
+/**
+ * Reads the trust flag directly instead of inferring it from an empty store.
+ *
+ * The inference was wrong in the case that matters: `claude -p` bypasses the
+ * trust dialog, so headless runs record sessions and the firing check goes
+ * green while every interactive session records nothing.
+ */
+function trustCheck(facts: Facts): Check {
+  switch (facts.trust) {
+    case 'accepted':
+      return { name: 'folder trust', status: 'ok', detail: 'trust dialog accepted' };
+    case 'not-accepted':
+      return {
+        name: 'folder trust',
+        status: 'warn',
+        detail: 'trust dialog not accepted; hooks fire only in headless `claude -p` runs',
+        remedy: TRUST_REMEDY,
+      };
+    case 'unknown-folder':
+      return {
+        name: 'folder trust',
+        status: 'warn',
+        detail: 'folder never opened interactively; hooks fire only in headless `claude -p` runs',
+        remedy: TRUST_REMEDY,
+      };
+    case 'unreadable':
+      return { name: 'folder trust', status: 'skip', detail: 'could not read ~/.claude.json' };
+  }
+}
+
 export function diagnose(facts: Facts): Check[] {
   return [
     nodeCheck(facts),
     registeredCheck(facts),
+    trustCheck(facts),
     firingCheck(facts),
     configCheck(facts),
     killSwitchCheck(facts),

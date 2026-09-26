@@ -10,6 +10,7 @@ const healthy: Facts = {
   gh: 'ok',
   env: {},
   configProblems: [],
+  trust: 'accepted',
 };
 
 const find = (facts: Facts, name: string) => {
@@ -104,4 +105,28 @@ test('several config problems are all named', () => {
 
   assert.match(check.detail, /a: bad/);
   assert.match(check.detail, /b: worse/);
+});
+
+test('an accepted trust dialog reports ok', () => {
+  assert.equal(find(healthy, 'folder trust').status, 'ok');
+});
+
+test('a folder never opened interactively warns, even when headless runs have recorded sessions', () => {
+  // The false green this check exists for: `claude -p` bypasses the dialog,
+  // so sessions get recorded while every interactive session records nothing.
+  const check = find({ ...healthy, recordedSessions: 5, trust: 'unknown-folder' }, 'folder trust');
+
+  assert.equal(check.status, 'warn');
+  assert.match(check.detail, /never opened interactively/i);
+  assert.match(check.remedy ?? '', /accept/i);
+});
+
+test('an explicitly unaccepted trust dialog warns', () => {
+  const check = find({ ...healthy, trust: 'not-accepted' }, 'folder trust');
+
+  assert.equal(check.status, 'warn');
+});
+
+test('an unreadable Claude Code state file skips rather than guessing', () => {
+  assert.equal(find({ ...healthy, trust: 'unreadable' }, 'folder trust').status, 'skip');
 });
