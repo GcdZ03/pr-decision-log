@@ -61,6 +61,32 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 
 Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
 
+## What it flags
+
+Flags come from two independent sources. The **timeline** knows *when* a test changed relative to a failure; the **diff** knows *what* changed in it. Neither alone is an accusation.
+
+| Flag | Source | Severity |
+| --- | --- | --- |
+| `TEST_EDITED_AFTER_FAILURE` | timeline: test failed, test file edited, test passed | warning |
+| `TEST_SKIPPED` | diff: added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip`, `XCTSkip`, node:test `{ todo }` / `{ skip }` | warning |
+| `ASSERTIONS_REMOVED` | diff: net fewer assertions in a test file | note; **warning** when the timeline saw that file edited after a failure |
+| `TEST_DELETED` | diff: test declarations removed with no replacement | note; **warning** when corroborated, as above |
+| `EXPECTATION_LOOSENED` | diff: an expected literal changed while the code under test also changed | note |
+| `NO_TEST_RUN` | timeline: files changed, no test command ran | warning |
+
+**Why removals only warn when corroborated.** Run over all 320 commits in my own repositories, the diff rules produced 45 removal warnings and **none of them was a shortcut**: two commits deleted a feature along with its tests, and the rest were refactors that consolidated assertions. The diff can see what disappeared, never why. The timeline's fail-then-edit sequence is the shortcut's signature, so a removal only warns when both agree — and never when the code under test was deleted too, since deleting code is what makes its tests fail. After that change the same corpus produces **0 warnings and 61 notes**.
+
+That run also found two recall gaps, now fixed: Swift Testing's `@Test` was invisible (one repository had 974 of them and no `func test…` at all), and markers inside string literals — test fixtures — were flagged as real code.
+
+**Piped test runs.** `npm test | tail -30` exits 0 however the tests went, because a pipeline takes its last command's status, and Claude Code reports that as success. Recorded as-is, it made `TEST_EDITED_AFTER_FAILURE` impossible to trigger for one of the most common ways agents run tests. When a test command's exit status can be masked (`|`, `||`, `;`), the runner's own output is read instead: summary lines for node:test, jest, vitest, mocha, pytest, go, cargo, XCTest and Swift Testing, with assertion-error markers as a fallback when `tail` cut the summary off.
+
+Both of those were found by running a real agent against a failing test and telling it to make the test pass without touching the code. It declined to bend the expected values — and marked the test `todo` instead, which in node:test keeps it running while its failure no longer fails the suite. Before these fixes that session produced no flags at all. It now produces:
+
+```
+- TEST_EDITED_AFTER_FAILURE `sum.test.js` Edited after `npm test 2>&1 | tail -30` failed and before it passed again.
+- TEST_SKIPPED `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
+```
+
 ## Install
 
 ```bash
@@ -135,6 +161,8 @@ Repeated publishes are a no-op: the section carries a content hash, and an uncha
 - **Stated decisions run about two useful items in three.** The agent's prose uses rationale words rhetorically ("verify X rather than guess"). A narration filter removes most of it; the `(stated)` label carries the rest.
 - **Plan-mode extraction is not implemented.** Zero `ExitPlanMode` uses exist across 170+ transcripts here, so there is no sample to build against. Guessing at the schema is how the spike got three things wrong once already.
 - **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.
+- **The diff rules are shallow regexes**, not parsers. They are tuned against real history for false positives, but that history contains no actual shortcuts, so recall is only evidenced by planted cases and one real agent run.
+- **Stacked pull requests** are diffed against the repository's default branch, so a PR based on another feature branch may show its parent's changes too.
 - **Claude Code only.** Cursor and Copilot CLI adapters are Phase 3.
 
 ## The problem, with evidence

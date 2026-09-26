@@ -436,6 +436,10 @@ Two independent signals, combined:
 - detect removed `it(`/`test(`/`def test_`/`func Test` declarations, raise `TEST_DELETED`;
 - detect changed literals inside `toBe|toEqual|assertEqual|XCTAssertEqual` where the source file it exercises also changed (map `foo.test.ts` -> `foo.ts`, `test_foo.py` -> `foo.py`, imports in the test file), raise `EXPECTATION_LOOSENED` at `info` severity (it is often legitimate; the point is to draw the eye).
 
+> **Update, 26 Sep 2026 — built and measured.** Run over all 320 commits in the author's repositories, the rules as specified above raised 45 removal warnings and none was a shortcut: two feature deletions and a handful of refactors. The diff cannot see intent, so the two signals are now combined as this section's heading always said they should be: `ASSERTIONS_REMOVED` and `TEST_DELETED` are `info` alone and `warn` only when `TEST_EDITED_AFTER_FAILURE` fired on the same file, and stay `info` when the mapped source file was deleted in the same diff, because deleting code is what makes its tests fail. Result on the same corpus: 0 warnings, 61 notes.
+>
+> The same run found that Swift Testing's `@Test` was missing from the declaration patterns (974 in one repository, no `func test…`) and that string-literal contents must be blanked before matching, or test fixtures are flagged as code. A real agent session then found two more gaps: node:test's `{ todo }` option hides a failing test without any `skip` in sight, and a test run piped through `tail` exits 0 on failure, so outcomes for masked commands are now read from the runner's output.
+
 Language-aware AST checks are out of scope; if precision matters for one language, shell out to assert-diff (Python) or Swarm Orchestrator (TS/JS) and map their findings into `flags`.
 
 Output: `flags[]` in the JSON, a "Flags" section in the markdown, and optionally a `neutral` Check Run from a GitHub Action (`checks: write`) so it is visible in the merge box without blocking.

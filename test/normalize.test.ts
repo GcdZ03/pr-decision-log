@@ -125,3 +125,37 @@ test('normalizes the real captured payloads from the Phase 0 fixture', () => {
   assert.equal(bad.outcome, 'fail');
   assert.equal(bad.exitCode, 1);
 });
+
+// A pipeline's exit status is its last command's, so `npm test | tail` exits 0
+// even when the tests fail. Found when a real agent session recorded a failing
+// run as a pass, which silently disabled TEST_EDITED_AFTER_FAILURE.
+
+const piped = (command: string, stdout: string) => ({
+  session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 't',
+  tool_input: { command }, tool_response: { stdout, stderr: '', interrupted: false },
+});
+
+test('a piped test run whose output shows a failure is recorded as a failure', () => {
+  const e = normalize(piped('npm test 2>&1 | tail -30', 'ℹ pass 1\nℹ fail 1'), '2026-09-26T09:00:00Z');
+
+  assert.equal(e?.kind === 'command' ? e.outcome : undefined, 'fail');
+});
+
+test('a piped test run whose output shows a pass stays a pass', () => {
+  const e = normalize(piped('npm test 2>&1 | tail -30', 'ℹ pass 2\nℹ fail 0'), '2026-09-26T09:00:00Z');
+
+  assert.equal(e?.kind === 'command' ? e.outcome : undefined, 'pass');
+});
+
+test('an unpiped passing run that prints an assertion error keeps trusting its exit code', () => {
+  // e.g. a suite that asserts on error messages; the runner exited 0.
+  const e = normalize(piped('npm test', 'expected AssertionError to be thrown\nℹ fail 0'), '2026-09-26T09:00:00Z');
+
+  assert.equal(e?.kind === 'command' ? e.outcome : undefined, 'pass');
+});
+
+test('a piped non-test command is never reinterpreted from its output', () => {
+  const e = normalize(piped('grep AssertionError app.log | head', 'AssertionError: boom'), '2026-09-26T09:00:00Z');
+
+  assert.equal(e?.kind === 'command' ? e.outcome : undefined, 'pass');
+});

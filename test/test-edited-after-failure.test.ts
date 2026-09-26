@@ -177,3 +177,26 @@ test('summariseCommand skips an echo that merely mentions a runner', () => {
   const script = ['echo "--- swift test --filter Core ---"', 'swift test --filter Core'].join('\n');
   assert.equal(summariseCommand(script), 'swift test --filter Core');
 });
+
+test('an unchanged assertion count is left out rather than shown as "0 -> 0"', () => {
+  // Seen on a real run: the edit touched only the `test(...)` line, so the
+  // count covered a fragment with no assertions and read as an empty test.
+  const flags = detectTestEditedAfterFailure([
+    cmd('c1', '09:00', 'npm test', 'fail', 'FAIL src/a.test.ts'),
+    edit('e1', '09:01', 'src/a.test.ts', 0, 0),
+    cmd('c2', '09:02', 'npm test', 'pass'),
+  ]);
+
+  assert.equal(flags.length, 1);
+  assert.ok(!/assertion count/.test(flags[0]?.detail ?? ''), flags[0]?.detail);
+});
+
+test('a changed assertion count is still shown', () => {
+  const flags = detectTestEditedAfterFailure([
+    cmd('c1', '09:00', 'npm test', 'fail', 'FAIL src/a.test.ts'),
+    edit('e1', '09:01', 'src/a.test.ts', 2, 1),
+    cmd('c2', '09:02', 'npm test', 'pass'),
+  ]);
+
+  assert.match(flags[0]?.detail ?? '', /assertion count 2 -> 1/);
+});

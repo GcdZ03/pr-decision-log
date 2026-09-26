@@ -1,16 +1,11 @@
 import { classifyCommand, type CommandKind } from './classify-command.ts';
 import type { TimelineEvent } from './types.ts';
+import { countAssertions } from '../flags/assertions.ts';
+import { exitStatusMaskable, outputShowsFailure } from './runner-output.ts';
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
 const WRITE_TOOLS = new Set(['Write']);
 
-/** Rough assertion counter, deliberately cross-language and shallow. */
-const ASSERT_RE = /\b(?:expect\(|assert[._(]|XCTAssert\w*|require\.\w+|t\.(?:Error|Fatal)\w*|Assert\.\w+)/g;
-
-function countAssertions(s: unknown): number {
-  if (typeof s !== 'string') return 0;
-  return (s.match(ASSERT_RE) ?? []).length;
-}
 
 /**
  * Bash failures arrive as a string whose first line is `Exit code N`. The docs
@@ -61,10 +56,18 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
     const interrupted = response['interrupted'] === true;
     const stdout = str(response['stdout']) ?? '';
     const stderr = str(response['stderr']) ?? '';
+    const output = [stdout, stderr].filter(Boolean).join('\n');
+
+    // Bash reports success whenever the shell exited 0, and `npm test | tail`
+    // exits 0 however the tests went. Recording that as a pass silently
+    // disabled TEST_EDITED_AFTER_FAILURE for the most common way agents run
+    // tests, so a masked test run is re-read from its own output.
+    const masked = classification === 'test' && exitStatusMaskable(command) && outputShowsFailure(output);
+
     return {
       kind: 'command', id, at: recordedAt, command, classification,
-      outcome: interrupted ? 'interrupted' : 'pass',
-      output: [stdout, stderr].filter(Boolean).join('\n'),
+      outcome: interrupted ? 'interrupted' : masked ? 'fail' : 'pass',
+      output,
       durationMs,
     };
   }

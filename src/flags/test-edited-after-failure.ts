@@ -8,6 +8,7 @@ export type { CommandEvent, EditEvent, Outcome, TimelineEvent } from '../events/
 export type { Flag, FlagCode } from './types.ts';
 
 import type { Flag } from './types.ts';
+import { isTestFile } from './test-files.ts';
 
 
 const RUNNER =
@@ -16,16 +17,6 @@ const RUNNER =
 // Lines that merely mention a runner (banner echoes, comments) are not invocations.
 const NOT_RUNNER = /^\s*(#|echo\b|printf\b)/;
 
-const TEST_DIR = /(^|\/)(tests?|spec|__tests__)\//i;
-const TEST_FILE = /\.(test|spec)\.[cm]?[tj]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.swift$|Test\.java$/;
-
-/**
- * Editing the source file to fix a failure is the desired behaviour. Only an
- * edit to the test itself is worth a reviewer's attention.
- */
-function isTestFile(path: string): boolean {
-  return TEST_DIR.test(path) || TEST_FILE.test(path);
-}
 
 /**
  * The failing output must actually implicate the edited file. A failure in an
@@ -68,8 +59,12 @@ export function summariseCommand(command: string, max = 80): string {
 }
 
 function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): string {
+  // The count covers only the edited fragment, so an unchanged one says
+  // nothing and "0 -> 0" reads as an empty test. Shown only when it moved.
   const counts =
-    first.assertionsBefore !== undefined && last.assertionsAfter !== undefined
+    first.assertionsBefore !== undefined &&
+    last.assertionsAfter !== undefined &&
+    first.assertionsBefore !== last.assertionsAfter
       ? `; assertion count ${first.assertionsBefore} -> ${last.assertionsAfter}`
       : '';
   const when = first.id === last.id ? `at ${first.at}` : `${first.at}-${last.at}`;
@@ -109,6 +104,8 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
         openFailure = null;
       }
     } else if (e.kind === 'edit' && openFailure) {
+      // Editing the source file to fix a failure is the desired behaviour. Only
+      // an edit to the test itself is worth a reviewer's attention.
       if (!isTestFile(e.path)) continue;
       if (!failureNamesFile(openFailure.output ?? '', e.path)) continue;
       const seen = window.get(e.path);
