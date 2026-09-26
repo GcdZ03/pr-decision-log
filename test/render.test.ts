@@ -76,3 +76,15 @@ test('a pipe outside a table is left alone, because a list needs no escape', () 
   assert.ok(row, 'changes row missing');
   assert.ok(row.includes('src/we|ird.ts'), `a list item should not be escaped: ${row}`);
 });
+
+test('a log built from several sessions says so', () => {
+  const md = render(buildLog([cmd('c1', 'npm test', 'pass')], { ...meta, sessions: ['aaaaaaaa-1', 'bbbbbbbb-2'] }));
+
+  assert.match(md, /2 agent sessions/);
+});
+
+test('a single-session log keeps the singular wording', () => {
+  const md = render(buildLog([cmd('c1', 'npm test', 'pass')], { ...meta, sessions: ['aaaaaaaa-1'] }));
+
+  assert.match(md, /the agent session/);
+});

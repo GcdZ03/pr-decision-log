@@ -269,6 +269,8 @@ Rendering rules: no raw tool output ever; file paths relative to repo root; comm
 
 ## 5. CLI and hook interface
 
+> **Update, 26 Sep 2026.** The Stop hook now records a turn (`session, repo, branch, at`) in `turns.jsonl`, and a branch's log merges every session's events by assigning each to the turn it happened in. Publishing keeps a small per-branch cache (`publish-state.json`: PR number, base, last published hash, and a five-minute "no PR" marker) because each `gh` round-trip measured about 500 ms against about 75 ms of local work. One `gh pr view --json number,body,baseRefName,url` replaces the separate number and body lookups and also supplies the base branch for stacked PRs and the repository for comment mode. Retention (`store.retention_days`) is enforced from the Stop hook at most once a day.
+
 ```
 pdl init [--global|--project] [--plugin]   write hook config into settings.json (or print plugin manifest)
 pdl hook                                   entrypoint for all hook events; reads stdin, dispatches on hook_event_name

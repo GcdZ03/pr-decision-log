@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { TimelineEvent } from './types.ts';
+import type { Turn } from './branch.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -53,6 +54,34 @@ export class EventStore {
     return files.length;
   }
 
+  #turnsFile(): string {
+    return join(this.#root, 'turns.jsonl');
+  }
+
+  appendTurn(turn: Turn): void {
+    mkdirSync(this.#root, { recursive: true, mode: 0o700 });
+    appendFileSync(this.#turnsFile(), `${JSON.stringify(turn)}\n`);
+  }
+
+  turns(): Turn[] {
+    let raw: string;
+    try {
+      raw = readFileSync(this.#turnsFile(), 'utf8');
+    } catch {
+      return [];
+    }
+    const out: Turn[] = [];
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line) as Turn);
+      } catch {
+        // Torn trailing line from a hook killed mid-write.
+      }
+    }
+    return out;
+  }
+
   /**
    * Delete sessions not written to for `days` days. Zero keeps everything.
    * Age is the file's last write, so a resumed session stays alive.
@@ -71,6 +100,13 @@ export class EventStore {
       } catch {
         // Raced with another hook deleting it; nothing to do.
       }
+    }
+
+    // Turn records age out on the same clock, or the index would keep
+    // pointing at sessions that no longer exist.
+    const kept = this.turns().filter((t) => Date.parse(t.at) >= cutoff);
+    if (kept.length !== this.turns().length) {
+      writeFileSync(this.#turnsFile(), kept.map((t) => `${JSON.stringify(t)}\n`).join(''));
     }
     return removed;
   }

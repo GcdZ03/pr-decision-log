@@ -24,6 +24,7 @@ export type DecisionLog = {
   generatedAt: string;
   repo: { remote: string; headSha?: string };
   branch: string;
+  sessions: string[];
   intent?: string;
   verification: Verification[];
   changes: Change[];
@@ -43,6 +44,8 @@ export type LogMeta = {
   repoRoot?: string;
   /** Unified diff of the pull request, for the diff-side test signals. Paths are already repo-relative. */
   diff?: string;
+  /** Sessions the log was built from; more than one when a PR spans sessions. */
+  sessions?: string[];
   /** `tests.flag_edit_after_failure`; on unless set to false. */
   flagEditAfterFailure?: boolean;
   /** From `redaction.extra_patterns`, applied on top of the built-in rules. */
@@ -126,6 +129,7 @@ export function buildLog(
     generatedAt: meta.generatedAt ?? new Date().toISOString(),
     repo: { remote: meta.repo, ...(meta.headSha ? { headSha: meta.headSha } : {}) },
     branch: meta.branch,
+    sessions: meta.sessions ?? [],
     ...(intent !== undefined ? { intent } : {}),
     verification,
     changes: [...changeMap.values()],
