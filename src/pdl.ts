@@ -13,7 +13,7 @@ import { extractDecisions } from './extract/decisions.ts';
 import { findTranscript } from './extract/find-transcript.ts';
 import { mergeHooks, pdlHookEvents } from './doctor/init.ts';
 import {
-  ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, writeSettings,
+  ghStatus, hookCommand, readSettings, repoRoot, settingsExist, settingsPathFor, trustState, writeSettings,
   type Scope,
 } from './doctor/settings.ts';
 import { loadConfig } from './config/config.ts';
@@ -126,6 +126,7 @@ function doctor(store: EventStore): void {
     gh: ghStatus(),
     env: process.env,
     configProblems: config.problems,
+    trust: trustState(root),
   };
 
   const checks = diagnose(facts);

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import type { Settings } from './init.ts';
+import type { TrustState } from './diagnose.ts';
 
 export type Scope = 'project' | 'user';
 
@@ -71,4 +72,28 @@ export function ghStatus(): 'ok' | 'missing' | 'unauthenticated' {
 export function repoRoot(): string {
   const p = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
   return p.status === 0 ? (p.stdout ?? '').trim() : process.cwd();
+}
+
+/**
+ * This folder's trust record in Claude Code's state file.
+ *
+ * Only the exact folder is consulted. Whether trusting a parent directory
+ * also covers its children is not something observed here, so a trusted
+ * parent is reported as no record rather than assumed to count.
+ */
+export function trustState(
+  root: string,
+  statePath: string = join(homedir(), '.claude.json'),
+): TrustState {
+  let projects: unknown;
+  try {
+    projects = (JSON.parse(readFileSync(statePath, 'utf8')) as { projects?: unknown }).projects;
+  } catch {
+    return 'unreadable';
+  }
+  if (typeof projects !== 'object' || projects === null) return 'unknown-folder';
+
+  const entry = (projects as Record<string, { hasTrustDialogAccepted?: unknown }>)[resolve(root)];
+  if (!entry) return 'unknown-folder';
+  return entry.hasTrustDialogAccepted === true ? 'accepted' : 'not-accepted';
 }

@@ -71,19 +71,22 @@ node dist/pdl.js doctor    # confirms they are actually firing
 
 `init` is idempotent, preserves other tools' hooks, and adopts a hand-written `pdl` hook instead of adding a second copy beside it.
 
-**Hooks stay dormant until you trust the folder.** Claude Code holds back hooks from every settings file, including your own global one, until you accept the trust dialog for that directory. A registered-but-dormant install is indistinguishable from a working one if you only read the config, so `doctor` checks whether anything has *ever* been recorded and says so:
+**Hooks stay dormant until you trust the folder.** Claude Code holds back hooks from every settings file, including your own global one, until you accept the trust dialog for that directory. A registered-but-dormant install is indistinguishable from a working one if you only read the config, so `doctor` reads the folder's trust flag straight out of Claude Code's own state file:
 
 ```
 [ok  ] hooks registered: 6 events in .claude/settings.json
-[warn] hooks firing: hooks are registered but no session has ever been recorded
-       -> Claude Code keeps hooks dormant until the folder is trusted.
+[warn] folder trust: folder never opened interactively; hooks fire only in headless `claude -p` runs
+       -> Run `claude` in this folder, accept the trust dialog, then `/hooks` to confirm the events show a count.
+[ok  ] hooks firing: 5 session(s) recorded
 ```
+
+Note the last line. An earlier version inferred trust from an empty store, and that inference failed in exactly the case that matters: headless `claude -p` runs bypass the dialog, so they record sessions and the check went green while every interactive session recorded nothing.
 
 ## Commands
 
 | Command | Does |
 | --- | --- |
-| `pdl doctor` | Five checks on the install, with a remedy for each failure |
+| `pdl doctor` | Seven checks on the install, with a remedy for each failure |
 | `pdl init [--user]` | Register hooks in project or user settings |
 | `pdl show <session>` | Print the recorded timeline |
 | `pdl build <session>` | Render the log to stdout |
