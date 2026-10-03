@@ -3,6 +3,8 @@ import type { TimelineEvent } from './types.ts';
 import { countAssertions } from '../flags/assertions.ts';
 import { exitStatusMaskable, outputShowsFailure } from './runner-output.ts';
 import { commandDir } from './location.ts';
+import { shellWrites } from './shell-writes.ts';
+import type { CommandWrite } from './types.ts';
 import { dirname, isAbsolute } from 'node:path';
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
@@ -49,12 +51,20 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
     // Where it ran, for attributing it to a repository and branch at the end
     // of the turn; see events/location.ts.
     const dir = cwd ? { dir: commandDir(command, cwd) } : {};
+    // Files it wrote, so a test rewritten from the shell is as visible as one
+    // changed with the Edit tool. Contents are counted, never kept.
+    const written: CommandWrite[] = shellWrites(command, cwd).map((w) => ({
+      path: w.path,
+      ...(w.append ? { append: true as const } : {}),
+      ...(w.content !== undefined && !w.append ? { assertionsAfter: countAssertions(w.content) } : {}),
+    }));
+    const writes = written.length > 0 ? { writes: written } : {};
 
     if (event === 'PostToolUseFailure') {
       const error = str(payload['error']) ?? '';
       return {
         kind: 'command', id, at: recordedAt, command, classification,
-        outcome: 'fail', output: error, exitCode: parseExitCode(error), durationMs, ...dir,
+        outcome: 'fail', output: error, exitCode: parseExitCode(error), durationMs, ...dir, ...writes,
       };
     }
 
@@ -76,6 +86,7 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
       output,
       durationMs,
       ...dir,
+      ...writes,
     };
   }
 

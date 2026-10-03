@@ -22,6 +22,8 @@ import {
   type Scope,
 } from './doctor/settings.ts';
 import { loadConfig } from './config/config.ts';
+import { classifyCommand } from './events/classify-command.ts';
+import { expandWrites } from './events/expand-writes.ts';
 import { compileExtraPatterns, redact } from './render/redact.ts';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -314,7 +316,8 @@ function purge(store: EventStore): void {
   process.stdout.write(`removed ${n} recorded session(s)\n`);
 }
 
-function printTimeline(label: string, events: TimelineEvent[]): void {
+function printTimeline(label: string, recorded: TimelineEvent[]): void {
+  const events = expandWrites(recorded);
   const commands = events.filter((e) => e.kind === 'command');
   const edits = events.filter((e) => e.kind === 'edit');
   const flags = detectTestEditedAfterFailure(events);
@@ -323,7 +326,7 @@ function printTimeline(label: string, events: TimelineEvent[]): void {
   process.stdout.write(`  ${events.length} events: ${commands.length} commands, ${edits.length} edits\n`);
   for (const c of commands) {
     if (c.kind !== 'command') continue;
-    process.stdout.write(`  [${c.classification}] ${c.outcome.padEnd(11)} ${c.command.split('\n')[0]?.slice(0, 60)}\n`);
+    process.stdout.write(`  [${classifyCommand(c.command)}] ${c.outcome.padEnd(11)} ${c.command.split('\n')[0]?.slice(0, 60)}\n`);
   }
   if (flags.length === 0) {
     process.stdout.write('  no flags\n');

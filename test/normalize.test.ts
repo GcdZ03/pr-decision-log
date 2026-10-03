@@ -196,3 +196,26 @@ test('a command from a payload with no cwd records no directory rather than gues
 
   assert.equal(c.dir, undefined);
 });
+
+test('a command records the files it wrote, with assertion counts but never the contents', () => {
+  const c = asCommand(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Bash', cwd: '/w/repo',
+    tool_input: { command: "cat > src/a.test.ts <<'EOF'\nexpect(secretValue).toBe(1);\nexpect(2).toBe(2);\nEOF\ncat >> notes.md <<'EOF'\nx\nEOF" },
+    tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.deepEqual(c.writes, [
+    { path: '/w/repo/src/a.test.ts', assertionsAfter: 2 },
+    { path: '/w/repo/notes.md', append: true },
+  ]);
+  assert.doesNotMatch(JSON.stringify(c.writes), /secretValue/);
+});
+
+test('a command that wrote nothing records no writes', () => {
+  const c = asCommand(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Bash', cwd: '/w',
+    tool_input: { command: 'npm test 2>&1 | tail' }, tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.equal(c.writes, undefined);
+});

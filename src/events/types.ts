@@ -16,6 +16,19 @@ export type CommandEvent = {
   durationMs?: number;
   /** The directory it ran in: a leading `cd`, else the session's. Absent on events recorded before this existed. */
   dir?: string;
+  /**
+   * Files the command wrote, read from its text (events/shell-writes.ts). Paths
+   * and assertion counts only: what was written is never stored.
+   */
+  writes?: CommandWrite[];
+};
+
+export type CommandWrite = {
+  path: string;
+  /** `>>`, `tee -a`, an append-mode open: it can only add. */
+  append?: true;
+  /** For a heredoc written straight to the file, the assertions in what was written. */
+  assertionsAfter?: number;
 };
 
 export type EditEvent = {
@@ -28,6 +41,10 @@ export type EditEvent = {
   assertionsAfter?: number;
   /** The edited file's directory, for attributing the edit to a repository. */
   dir?: string;
+  /** Written by a shell command rather than an edit tool; expanded from `CommandEvent.writes`. */
+  via?: 'shell';
+  /** An append: whatever it wrote, it removed nothing. */
+  additive?: true;
 };
 
 export type TimelineEvent = CommandEvent | EditEvent;

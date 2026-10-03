@@ -1,43 +1,28 @@
 export type CommandKind = 'test' | 'build' | 'lint' | 'git' | 'other';
 
-/**
- * Lines that merely mention a runner (banner echoes, comments) are not
- * invocations. Checked before anything else so `echo "npm test"` stays `other`.
- */
-const NOT_INVOCATION = /^\s*(#|echo\b|printf\b)/;
+import { commandSegments, runsKind, RUNNER_KINDS } from './command-text.ts';
 
 // Ordered: the first matching kind wins. `test` precedes `build` deliberately —
 // in `npm run build && npm test` the test outcome is what a reviewer needs.
 const PATTERNS: ReadonlyArray<readonly [CommandKind, RegExp]> = [
-  [
-    'test',
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+test:[\w-]+|\bvitest\b|\bjest\b|\bpytest\b|\bgo\s+test\b|\bswift\s+test\b|\bcargo\s+test\b|\bnode\s+--test\b|\brspec\b|\bphpunit\b|\bdotnet\s+test\b|\bxcodebuild\b[^\n]*\btest\b/,
-  ],
-  [
-    'lint',
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|\beslint\b|\bprettier\b|\bruff\b|\bblack\b|\bclippy\b|\bswiftlint\b|\bgolangci-lint\b|\bflake8\b|\bmypy\b/,
-  ],
-  [
-    'build',
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\btsc\b|\bcargo\s+build\b|\bgo\s+build\b|\bswift\s+build\b|\bxcodebuild\b|\bmake\b|\bgradle\b|\bmvn\b|\bdocker\s+build\b/,
-  ],
+  ['test', RUNNER_KINDS.test],
+  ['lint', RUNNER_KINDS.lint],
+  ['build', RUNNER_KINDS.build],
   ['git', /\bgit\s+\w|\bgh\s+\w/],
 ];
 
 /**
  * Classify a shell command for the verification timeline.
  *
- * Commands in real sessions are frequently multi-line scripts, so every line is
- * considered and the strongest signal wins.
+ * Commands in real sessions are frequently multi-line scripts, so every
+ * command in the script is considered and the strongest signal wins. Heredoc
+ * bodies and quoted strings are not commands and are never read: a script
+ * that writes a Dockerfile containing `RUN npm test` did not run the tests.
  */
 export function classifyCommand(command: string): CommandKind {
-  const lines = command
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !NOT_INVOCATION.test(l));
-
+  const segments = commandSegments(command);
   for (const [kind, re] of PATTERNS) {
-    if (lines.some((l) => re.test(l))) return kind;
+    if (segments.some((l) => runsKind(l, re))) return kind;
   }
   return 'other';
 }

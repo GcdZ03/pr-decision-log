@@ -9,13 +9,8 @@ export type { Flag, FlagCode } from './types.ts';
 
 import type { Flag } from './types.ts';
 import { isTestFile } from './test-files.ts';
-
-
-const RUNNER =
-  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?\S|vitest|jest|pytest|go\s+test|swift\s+test|cargo\s+test|xcodebuild|node\s+--test|rspec|phpunit|dotnet\s+test|gradle|mvn\b/;
-
-// Lines that merely mention a runner (banner echoes, comments) are not invocations.
-const NOT_RUNNER = /^\s*(#|echo\b|printf\b)/;
+import { runnerFragment } from '../events/command-text.ts';
+import { classifyCommand } from '../events/classify-command.ts';
 
 
 /**
@@ -42,20 +37,13 @@ function isPurelyAdditive(before?: number, after?: number): boolean {
 
 /**
  * Real commands in a session are frequently whole shell scripts: multi-line,
- * with absolute paths, exported tokens and heredocs. DESIGN section 9 forbids
- * putting those in a PR body. Reduce the command to a recognisable runner
- * fragment: first line only, leading `cd ... &&` stripped, hard length cap.
+ * with absolute paths, exported tokens and heredocs full of file contents.
+ * DESIGN section 9 forbids putting those in a PR body, so only the runner
+ * fragment is ever published (see events/command-text.ts), and a command that
+ * ran no runner is named by its kind alone.
  */
-export function summariseCommand(command: string, max = 80): string {
-  const lines = command.split('\n').map((l) => l.trim()).filter(Boolean);
-  // Prefer the line that actually invokes a runner; a script's first line is
-  // usually `cd <absolute path>`, which is both useless and a path leak.
-  const runnerLine = lines.find((l) => RUNNER.test(l) && !NOT_RUNNER.test(l));
-  const chosen = runnerLine ?? lines[0] ?? '';
-  const withoutCd = chosen.replace(/^cd\s+\S+\s*&&\s*/, '').trim();
-  const base = withoutCd || chosen;
-  if (base.length <= max) return base;
-  return `${base.slice(0, max - 1)}\u2026`;
+export function summariseCommand(command: string): string {
+  return runnerFragment(command) ?? `(${classifyCommand(command)} command)`;
 }
 
 function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): string {
@@ -71,6 +59,17 @@ function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): strin
   return `Edited ${when}, after \`${summariseCommand(failure.command)}\` failed at ${failure.at} and before it passed again${counts}.`;
 }
 
+/**
+ * Whether a passing command re-ran the failing one. Agents pipe the same run
+ * differently each time (`pnpm test | tail`, then `pnpm test`), so the runner
+ * fragment decides, not the exact text.
+ */
+function sameRun(a: CommandEvent, b: CommandEvent): boolean {
+  if (a.command === b.command) return true;
+  const fragment = runnerFragment(a.command);
+  return fragment !== undefined && fragment === runnerFragment(b.command);
+}
+
 export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   const flags: Flag[] = [];
   let openFailure: CommandEvent | null = null;
@@ -82,6 +81,7 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   const emit = (failure: CommandEvent) => {
     for (const { first, last } of window.values()) {
       if (isPurelyAdditive(first.assertionsBefore, last.assertionsAfter)) continue;
+      if (first.additive && last.additive) continue; // Appends only: nothing was taken out.
       flags.push({
         code: 'TEST_EDITED_AFTER_FAILURE',
         severity: 'warn',
@@ -95,10 +95,14 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
 
   for (const e of events) {
     if (e.kind === 'command') {
+      // Only a test run opens or closes a window. A failing `sed` or `ls` in
+      // the middle says nothing about the tests, and once split one real
+      // window into two flags.
+      if (classifyCommand(e.command) !== 'test') continue;
       if (e.outcome === 'fail') {
         if (openFailure) emit(openFailure);
         openFailure = e;
-      } else if (e.outcome === 'pass' && openFailure && e.command === openFailure.command) {
+      } else if (e.outcome === 'pass' && openFailure && sameRun(e, openFailure)) {
         // The window closes on green: the failure this command reported is resolved.
         emit(openFailure);
         openFailure = null;

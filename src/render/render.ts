@@ -25,6 +25,9 @@ function cell(value: string): string {
   return value.replace(/\|/g, '\\|');
 }
 
+/** A reviewer reads the diff for the full list; past this the section only costs body budget. */
+const MAX_CHANGES = 30;
+
 function timeOnly(iso: string): string {
   const m = /T(\d{2}:\d{2})/.exec(iso);
   return m?.[1] ?? iso;
@@ -61,18 +64,32 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
     sections.push(`\n### Flags\n${lines.join('\n')}\n`);
   }
 
+  const others = log.otherCommands ?? 0;
+  const otherNote = others === 0 ? '' : `${others} other command${others === 1 ? '' : 's'}`;
   if (log.verification.length > 0) {
     const rows = log.verification.map(
       (v) => `| ${timeOnly(v.at)} | \`${cell(v.command)}\` | ${OUTCOME_LABEL[v.outcome] ?? v.outcome} |`,
     );
-    sections.push(`\n### Verification (recorded)\n\n| When | Command | Result |\n| --- | --- | --- |\n${rows.join('\n')}\n`);
+    const note = otherNote ? `\n*${otherNote} (file writes, searches, git) not listed.*\n` : '';
+    sections.push(`\n### Verification (recorded)\n\n| When | Command | Result |\n| --- | --- | --- |\n${rows.join('\n')}\n${note}`);
+  } else if (otherNote) {
+    // Changes with nothing that checked them; the NO_TEST_RUN flag says why it matters.
+    sections.push(`\n### Verification (recorded)\n\nNo test, build or lint run was recorded. ${otherNote} not listed.\n`);
   }
 
   if (log.changes.length > 0) {
-    const rows = log.changes.map(
-      (c) => `- \`${c.file}\` - ${c.edits} edit${c.edits === 1 ? '' : 's'}${c.role === 'test' ? ' (test)' : ''}`,
-    );
-    sections.push(`\n### Changes\n${rows.join('\n')}\n`);
+    const shown = log.changes.slice(0, MAX_CHANGES);
+    const rows = shown.map((c) => {
+      const tags = [
+        ...(c.status && c.status !== 'modified' ? [c.status] : []),
+        ...(c.role === 'test' ? ['test'] : []),
+      ];
+      const count = c.edits > 0 ? ` - ${c.edits} edit${c.edits === 1 ? '' : 's'}` : '';
+      return `- \`${c.file}\`${tags.length > 0 ? ` (${tags.join(', ')})` : ''}${count}`;
+    });
+    const rest = log.changes.length - shown.length;
+    const more = rest > 0 ? `\n*and ${rest} more file${rest === 1 ? '' : 's'}.*\n` : '';
+    sections.push(`\n### Changes\n${rows.join('\n')}\n${more}`);
   }
 
   // Claims last, per DESIGN principle 1: the facts above are always present,
