@@ -152,8 +152,6 @@ Verified end to end: installed at local scope into a scratch project from a git 
 
 Note the last line. An earlier version inferred trust from an empty store, and that inference failed in exactly the case that matters: headless `claude -p` runs bypass the dialog, so they record sessions and the check went green while every interactive session recorded nothing.
 
-**This repository runs its own hooks.** `.claude/settings.json` registers pdl on itself, so if you open a clone in Claude Code and accept the trust dialog, your sessions here are recorded to `~/.local/share/pdl` and the log may be published to any pull request you open from that branch. Decline the dialog, or set `PDL_DISABLE=1`, to opt out.
-
 ## Using it
 
 1. **Work in Claude Code as usual.** Every command, test run and edit is recorded locally in `~/.local/share/pdl`. Nothing is sent anywhere yet.
