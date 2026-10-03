@@ -9,13 +9,8 @@ export type { Flag, FlagCode } from './types.ts';
 
 import type { Flag } from './types.ts';
 import { isTestFile } from './test-files.ts';
-
-
-const RUNNER =
-  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?\S|vitest|jest|pytest|go\s+test|swift\s+test|cargo\s+test|xcodebuild|node\s+--test|rspec|phpunit|dotnet\s+test|gradle|mvn\b/;
-
-// Lines that merely mention a runner (banner echoes, comments) are not invocations.
-const NOT_RUNNER = /^\s*(#|echo\b|printf\b)/;
+import { runnerFragment } from '../events/command-text.ts';
+import { classifyCommand } from '../events/classify-command.ts';
 
 
 /**
@@ -42,20 +37,13 @@ function isPurelyAdditive(before?: number, after?: number): boolean {
 
 /**
  * Real commands in a session are frequently whole shell scripts: multi-line,
- * with absolute paths, exported tokens and heredocs. DESIGN section 9 forbids
- * putting those in a PR body. Reduce the command to a recognisable runner
- * fragment: first line only, leading `cd ... &&` stripped, hard length cap.
+ * with absolute paths, exported tokens and heredocs full of file contents.
+ * DESIGN section 9 forbids putting those in a PR body, so only the runner
+ * fragment is ever published (see events/command-text.ts), and a command that
+ * ran no runner is named by its kind alone.
  */
-export function summariseCommand(command: string, max = 80): string {
-  const lines = command.split('\n').map((l) => l.trim()).filter(Boolean);
-  // Prefer the line that actually invokes a runner; a script's first line is
-  // usually `cd <absolute path>`, which is both useless and a path leak.
-  const runnerLine = lines.find((l) => RUNNER.test(l) && !NOT_RUNNER.test(l));
-  const chosen = runnerLine ?? lines[0] ?? '';
-  const withoutCd = chosen.replace(/^cd\s+\S+\s*&&\s*/, '').trim();
-  const base = withoutCd || chosen;
-  if (base.length <= max) return base;
-  return `${base.slice(0, max - 1)}\u2026`;
+export function summariseCommand(command: string): string {
+  return runnerFragment(command) ?? `(${classifyCommand(command)} command)`;
 }
 
 function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): string {

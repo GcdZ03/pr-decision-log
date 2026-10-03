@@ -101,3 +101,78 @@ test('extra redaction rules apply to everything the log publishes', () => {
 
   assert.ok(!JSON.stringify(log).includes('INTERNAL-AB12CD34'));
 });
+
+// A real log listed about forty commands, nearly all `cat > f`, `sed` and
+// `grep`, burying the nine test runs a reviewer needed.
+
+const run = (id: string, command: string, classification: 'test' | 'build' | 'lint' | 'git' | 'other'): TimelineEvent =>
+  ({ kind: 'command', id, at: '2026-09-19T09:00:00Z', command, classification, outcome: 'pass' });
+
+test('verification lists test, build and lint runs and only counts the rest', () => {
+  const log = buildLog([
+    run('a', 'pnpm test', 'test'), run('b', 'pnpm run typecheck', 'build'), run('c', 'just lint', 'lint'),
+    run('d', "cat > src/x.ts <<'EOF'\nexport {}\nEOF", 'other'), run('e', 'grep -n foo src', 'other'), run('f', 'git status', 'git'),
+  ], meta);
+
+  assert.deepEqual(log.verification.map((v) => v.command), ['pnpm test', 'pnpm run typecheck', 'just lint']);
+  assert.equal(log.otherCommands, 3);
+});
+
+test('no command text that is not a runner fragment reaches the log', () => {
+  const log = buildLog([
+    run('a', "cat > Dockerfile <<'EOF'\nRUN npm install --global pnpm\nEOF\npnpm test", 'test'),
+    run('b', "sed -i '' 's/secret-value/x/' /Users/someone/private/app.ts", 'other'),
+  ], meta);
+
+  const json = JSON.stringify(log);
+  assert.doesNotMatch(json, /Dockerfile|RUN npm|secret-value|Users\/someone/);
+  assert.equal(log.verification[0]?.command, 'pnpm test');
+});
+
+const DIFF = [
+  'diff --git a/src/api.ts b/src/api.ts', 'index 1..2 100644', '--- a/src/api.ts', '+++ b/src/api.ts', '@@ -1 +1 @@', '-a', '+b',
+  'diff --git a/src/api.test.ts b/src/api.test.ts', 'new file mode 100644', 'index 0..2', '--- /dev/null', '+++ b/src/api.test.ts', '@@ -0,0 +1 @@', '+it("x", () => {});',
+  'diff --git a/old.md b/old.md', 'deleted file mode 100644', 'index 2..0', '--- a/old.md', '+++ /dev/null', '@@ -1 +0,0 @@', '-gone',
+  'diff --git a/a/before.ts b/a/after.ts', 'similarity index 100%', 'rename from a/before.ts', 'rename to a/after.ts',
+].join('\n');
+
+test('changes come from the PR diff, however the files were written', () => {
+  const log = buildLog([], { ...meta, diff: DIFF });
+
+  assert.deepEqual(log.changes.map((c) => [c.file, c.status, c.role]), [
+    ['src/api.ts', 'modified', 'source'],
+    ['src/api.test.ts', 'added', 'test'],
+    ['old.md', 'deleted', 'source'],
+    ['a/after.ts', 'renamed', 'source'],
+  ]);
+});
+
+test("the agent's own edit counts are added to the diff's files", () => {
+  const log = buildLog([edit('e1', '/repo/src/api.ts'), edit('e2', '/repo/src/api.ts')], { ...meta, diff: DIFF, repoRoot: '/repo' });
+
+  assert.equal(log.changes.find((c) => c.file === 'src/api.ts')?.edits, 2);
+  assert.equal(log.changes.find((c) => c.file === 'src/api.test.ts')?.edits, 0);
+});
+
+test('an edit the diff does not contain is listed as not in the diff, and one outside the repo is dropped', () => {
+  const log = buildLog([edit('e1', '/repo/src/wip.ts'), edit('e2', '/tmp/scratch.py')], { ...meta, diff: DIFF, repoRoot: '/repo' });
+
+  assert.equal(log.changes.find((c) => c.file === 'src/wip.ts')?.status, 'not in diff');
+  assert.ok(!log.changes.some((c) => c.file.includes('scratch')));
+});
+
+test('with no diff, changes still come from the edits, as before', () => {
+  const log = buildLog([edit('e1', 'src/a.ts')], meta);
+
+  assert.deepEqual(log.changes.map((c) => [c.file, c.edits]), [['src/a.ts', 1]]);
+});
+
+test('commands are classified when the log is built, so a stored misclassification is corrected', () => {
+  // Recorded by an older classifier that read heredoc bodies.
+  const stale: TimelineEvent = { kind: 'command', id: 'x', at: '2026-09-19T09:00:00Z',
+    command: "cat > Dockerfile <<'EOF'\nRUN pnpm test\nEOF", classification: 'test', outcome: 'pass' };
+
+  const log = buildLog([stale], meta);
+  assert.equal(log.verification.length, 0);
+  assert.equal(log.otherCommands, 1);
+});

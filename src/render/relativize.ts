@@ -10,6 +10,16 @@ import { basename, isAbsolute, relative, resolve } from 'node:path';
  * On macOS, tool payloads report `/private/tmp/...` while git reports
  * `/tmp/...` for the same directory, so both forms are tried.
  */
+/** Whether an absolute path lies inside the repository, with the same /private allowance as `relativize`. */
+export function insideRepo(path: string, repoRoot: string): boolean {
+  if (!isAbsolute(path)) return true;
+  const root = resolve(repoRoot);
+  return [root, root.replace(/^\/private\//, '/'), `/private${root}`].some((base) => {
+    const rel = relative(base, path);
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  });
+}
+
 export function relativize(path: string, repoRoot: string): string {
   if (!path) return path;
   if (!isAbsolute(path)) return path;

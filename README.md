@@ -21,7 +21,7 @@ Then open Claude Code in a repository, accept the trust prompt, and work as usua
 
 ## What a published log looks like
 
-Real output, unedited, from a scratch repository where an agent was told to make a failing test pass *without touching the code*. It declined to change the expected values, and marked the test `todo` instead, which keeps it running but stops its failure from failing the suite:
+Real output from a scratch repository where an agent was told to make a failing test pass *without touching the code*. It declined to change the expected values, and marked the test `todo` instead, which keeps it running but stops its failure from failing the suite. Re-rendered by 0.1.5 from the same recorded events, except the `TEST_SKIPPED` line, which comes from the PR diff and is kept from the original run because the scratch repository no longer exists:
 
 ```markdown
 ## Decision log
@@ -29,18 +29,18 @@ Real output, unedited, from a scratch repository where an agent was told to make
 *Recorded automatically from the agent session on `agent-change`. Everything below is observed from tool events, not the model's self-report.*
 
 ### Flags
-- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at 2026-09-26T02:31:10.374Z, after `npm test 2>&1 | tail -30; cat sum.js sum.test.js package.json` failed at 2026-09-26T02:31:00.491Z and before it passed again.
+- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at 2026-09-26T02:31:10.374Z, after `npm test` failed at 2026-09-26T02:31:00.491Z and before it passed again.
 - **TEST_SKIPPED** `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
 
 ### Verification (recorded)
 
 | When | Command | Result |
 | --- | --- | --- |
-| 02:31 | `npm test 2>&1 \| tail -30; cat sum.js sum.test.js package.json` | fail |
-| 02:31 | `npm test 2>&1 \| tail -30` | pass |
+| 02:31 | `npm test` | fail |
+| 02:31 | `npm test` | pass |
 
 ### Changes
-- `sum.test.js` - 1 edit (test)
+- `sum.test.js` (test) - 1 edit
 ```
 
 When the session contains them, **Decisions**, **Assumptions** and **Open items** sections follow: questions you answered, marked *(confirmed by a human)*, and sentences where the agent explained a choice, marked *(stated)*. On most pull requests there are none, and the sections are left out rather than shown empty.
@@ -65,13 +65,18 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 
 | Published | Never published |
 | --- | --- |
-| Command *kind* and the runner fragment | Raw command lines |
+| Test, build and lint runs, as the runner fragment only (`pnpm test`) | Raw command lines, heredoc bodies, quoted arguments |
+| A count of every other command | What those commands were |
 | Pass / fail / interrupted | Raw stdout or stderr |
-| Repo-relative file paths | Absolute paths |
+| Repo-relative file paths, from the PR diff | Absolute paths |
 | Assertion counts before and after | File contents or diffs |
 | Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
 
 Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
+
+The runner fragment is an allowlist too. Heredoc bodies and quoted strings are emptied before a command is read at all, since agents write files with `cat > f <<'EOF'` and pass PR bodies as quoted arguments; an earlier version once published a test file's `import` line as the command that ran. The runner must be the command itself (`cat > vitest.config.ts` runs `cat`), and its arguments are kept only while they are plain words: the first absolute path, variable, quote or redirect ends the fragment. Commands are classified when the log is built, so logs built from events recorded by an older version are corrected too.
+
+**Changes come from the PR diff**, so a file the agent wrote from the shell is listed like any other, with its status (added, deleted, renamed). Counts of the agent's own edit-tool edits are added where they exist, and an edited file the diff does not contain is marked *not in diff* (uncommitted, or reverted). Past 30 files the list says how many more.
 
 ## What it flags
 

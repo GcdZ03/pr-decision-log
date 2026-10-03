@@ -166,10 +166,11 @@ test('summariseCommand picks the test-runner line out of a shell script', () => 
     'swift test --filter CorePurityTests 2>&1',
   ].join('\n');
 
-  assert.equal(summariseCommand(script), 'swift test --filter CorePurityTests 2>&1');
+  assert.equal(summariseCommand(script), 'swift test --filter CorePurityTests');
 });
 
-test('summariseCommand falls back to the first line when no runner is present', () => {
+test('summariseCommand never publishes a command that ran no runner, only that one ran', () => {
+  assert.equal(summariseCommand('sed -i "" s/a/b/ /Users/someone/secret.txt'), '(other command)');
   assert.equal(summariseCommand('make check\nsomething else'), 'make check');
 });
 

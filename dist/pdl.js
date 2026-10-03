@@ -146,27 +146,95 @@ var EventStore = class {
   }
 };
 
-// src/events/classify-command.ts
+// src/events/command-text.ts
+var HEREDOC_RE = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+function stripHeredocs(command2) {
+  const out = [];
+  const pending = [];
+  for (const line of command2.split("\n")) {
+    const open = pending[0];
+    if (open) {
+      if ((open.tabs ? line.replace(/^\t+/, "") : line) === open.delimiter) pending.shift();
+      continue;
+    }
+    out.push(line);
+    for (const m of line.matchAll(HEREDOC_RE)) pending.push({ delimiter: m[3] ?? "", tabs: m[1] === "-" });
+  }
+  return out.join("\n");
+}
+function blankQuotes(text) {
+  let out = "";
+  let quote;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\" && quote === '"') {
+        i++;
+        continue;
+      }
+      if (c === quote) {
+        quote = void 0;
+        out += c;
+      }
+      continue;
+    }
+    if (c === "\\") {
+      out += c + (text[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    out += c;
+  }
+  return out;
+}
+function scriptSkeleton(command2) {
+  return blankQuotes(stripHeredocs(command2));
+}
 var NOT_INVOCATION = /^\s*(#|echo\b|printf\b)/;
+function commandSegments(command2) {
+  return scriptSkeleton(command2).split("\n").filter((l) => l.trim() && !NOT_INVOCATION.test(l)).flatMap((l) => l.replace(/\d*>&\d+|&>/g, ">").split(/&&|\|\||[;|&]/)).map((s) => s.replace(/[()]/g, " ").trim()).filter((s) => s && !NOT_INVOCATION.test(s));
+}
+var RUNNER_KINDS = {
+  test: /\b(?:npm|pnpm|yarn|bun)(?:\s+--?[\w-]+(?:[= ](?!run\b|test\b|e2e\b)[^\s-]\S*)?)*\s+(?:run\s+)?(?:test|e2e)\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+(?:test|e2e):[\w-]+|\bvitest\b|\bjest\b|\bpytest\b|\bplaywright\s+test\b|\bgo\s+test\b|\bswift\s+test\b|\bcargo\s+test\b|\bnode\s+--test\b|\brspec\b|\bphpunit\b|\bdotnet\s+test\b|\bxcodebuild\b[^\n]*\btest\b|\b(?:just|make|task)\s+(?:test|e2e)\b/,
+  lint: /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|\beslint\b|\bprettier\b|\bruff\b|\bblack\b|\bcargo\s+(?:clippy|fmt)\b|\bswiftlint\b|\bgolangci-lint\b|\bflake8\b|\bmypy\b|\b(?:just|make|task)\s+lint\b/,
+  build: /\b(?:npm|pnpm|yarn|bun)(?:\s+--?[\w-]+(?:[= ](?!run\b|build\b|typecheck\b)[^\s-]\S*)?)*\s+(?:run\s+)?(?:build|typecheck|type-check)\b|\btsc\b|\bpyright\b|\bcargo\s+build\b|\bgo\s+build\b|\bswift\s+build\b|\bxcodebuild\b|\bmake\b|\bgradle\b|\bmvn\b|\bdocker\s+(?:compose\s+)?build\b|\b(?:just|task)\s+(?:build|typecheck)\b/
+};
+var LAUNCHER_RE = /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|timeout\s+\S+|time|env|nice|exec|command)\s+)+/;
+var WRAPPER_RE = /^(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+(?:exec|dlx)|uv\s+run|poetry\s+run|pipenv\s+run|bundle\s+exec|python3?\s+-m)(?:\s+--?[\w-]+)*\s+/;
+function runsKind(segment, re) {
+  const head = segment.replace(LAUNCHER_RE, "");
+  const anchored = new RegExp(`^(?:${re.source})`);
+  return anchored.test(head) || anchored.test(head.replace(WRAPPER_RE, ""));
+}
+var SAFE_WORD = /^(?!\/|~|\.\.)[\w@.:,=+%/-]+$/;
+var MAX_FRAGMENT = 80;
+function runnerFragment(command2) {
+  for (const kind of ["test", "lint", "build"]) {
+    const segment = commandSegments(command2).find((s) => runsKind(s, RUNNER_KINDS[kind]));
+    if (!segment) continue;
+    const words = [];
+    for (const word of segment.replace(LAUNCHER_RE, "").split(/\s+/)) {
+      if (!SAFE_WORD.test(word) || /^\d*>/.test(word)) break;
+      if ([...words, word].join(" ").length > MAX_FRAGMENT) break;
+      words.push(word);
+    }
+    if (words.length > 0) return words.join(" ");
+  }
+  return void 0;
+}
+
+// src/events/classify-command.ts
 var PATTERNS = [
-  [
-    "test",
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+test:[\w-]+|\bvitest\b|\bjest\b|\bpytest\b|\bgo\s+test\b|\bswift\s+test\b|\bcargo\s+test\b|\bnode\s+--test\b|\brspec\b|\bphpunit\b|\bdotnet\s+test\b|\bxcodebuild\b[^\n]*\btest\b/
-  ],
-  [
-    "lint",
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|\beslint\b|\bprettier\b|\bruff\b|\bblack\b|\bclippy\b|\bswiftlint\b|\bgolangci-lint\b|\bflake8\b|\bmypy\b/
-  ],
-  [
-    "build",
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\btsc\b|\bcargo\s+build\b|\bgo\s+build\b|\bswift\s+build\b|\bxcodebuild\b|\bmake\b|\bgradle\b|\bmvn\b|\bdocker\s+build\b/
-  ],
+  ["test", RUNNER_KINDS.test],
+  ["lint", RUNNER_KINDS.lint],
+  ["build", RUNNER_KINDS.build],
   ["git", /\bgit\s+\w|\bgh\s+\w/]
 ];
 function classifyCommand(command2) {
-  const lines = command2.split("\n").map((l) => l.trim()).filter((l) => l && !NOT_INVOCATION.test(l));
+  const segments = commandSegments(command2);
   for (const [kind, re] of PATTERNS) {
-    if (lines.some((l) => re.test(l))) return kind;
+    if (segments.some((l) => runsKind(l, re))) return kind;
   }
   return "other";
 }
@@ -373,8 +441,6 @@ function isTestFile(path) {
 }
 
 // src/flags/test-edited-after-failure.ts
-var RUNNER = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?\S|vitest|jest|pytest|go\s+test|swift\s+test|cargo\s+test|xcodebuild|node\s+--test|rspec|phpunit|dotnet\s+test|gradle|mvn\b/;
-var NOT_RUNNER = /^\s*(#|echo\b|printf\b)/;
 function failureNamesFile(output, path) {
   if (!output) return false;
   if (output.includes(path)) return true;
@@ -385,14 +451,8 @@ function isPurelyAdditive(before, after) {
   if (before === void 0 || after === void 0) return false;
   return after > before;
 }
-function summariseCommand(command2, max = 80) {
-  const lines = command2.split("\n").map((l) => l.trim()).filter(Boolean);
-  const runnerLine = lines.find((l) => RUNNER.test(l) && !NOT_RUNNER.test(l));
-  const chosen = runnerLine ?? lines[0] ?? "";
-  const withoutCd = chosen.replace(/^cd\s+\S+\s*&&\s*/, "").trim();
-  const base = withoutCd || chosen;
-  if (base.length <= max) return base;
-  return `${base.slice(0, max - 1)}\u2026`;
+function summariseCommand(command2) {
+  return runnerFragment(command2) ?? `(${classifyCommand(command2)} command)`;
 }
 function detail(failure, first, last) {
   const counts = first.assertionsBefore !== void 0 && last.assertionsAfter !== void 0 && first.assertionsBefore !== last.assertionsAfter ? `; assertion count ${first.assertionsBefore} -> ${last.assertionsAfter}` : "";
@@ -491,6 +551,14 @@ function redact(input, extra = []) {
 
 // src/render/relativize.ts
 import { basename, isAbsolute as isAbsolute2, relative, resolve as resolve2 } from "node:path";
+function insideRepo(path, repoRoot2) {
+  if (!isAbsolute2(path)) return true;
+  const root = resolve2(repoRoot2);
+  return [root, root.replace(/^\/private\//, "/"), `/private${root}`].some((base) => {
+    const rel = relative(base, path);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute2(rel);
+  });
+}
 function relativize(path, repoRoot2) {
   if (!path) return path;
   if (!isAbsolute2(path)) return path;
@@ -519,7 +587,11 @@ function parse(diff) {
     if (!current) continue;
     if (!inHunk) {
       if (line.startsWith("deleted file mode") || line === "+++ /dev/null") current.deleted = true;
-      else if (line.startsWith("--- a/")) current.path = line.slice(6);
+      else if (line.startsWith("new file mode") || line === "--- /dev/null") current.created = true;
+      else if (line.startsWith("rename to ")) {
+        current.path = line.slice(10);
+        current.renamed = true;
+      } else if (line.startsWith("--- a/")) current.path = line.slice(6);
       else if (line.startsWith("+++ b/")) current.path = line.slice(6);
       else if (line.startsWith("@@")) inHunk = true;
       continue;
@@ -529,6 +601,12 @@ function parse(diff) {
     else if (line.startsWith("-")) current.removed.push(line.slice(1));
   }
   return files;
+}
+function changedFiles(diff) {
+  return parse(diff).filter((f) => f.path).map((f) => ({
+    path: f.path,
+    status: f.deleted ? "deleted" : f.created ? "added" : f.renamed ? "renamed" : "modified"
+  }));
 }
 var count = (lines, re) => lines.reduce((n, l) => n + (l.match(new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`)) ?? []).length, 0);
 function assertionsRemoved(f) {
@@ -683,37 +761,48 @@ function buildLog(events, meta, decisions = []) {
   };
   const rel = (p) => meta.repoRoot ? relativize(p, meta.repoRoot) : p;
   const verification = [];
-  const changeMap = /* @__PURE__ */ new Map();
+  let otherCommands = 0;
+  const edits = /* @__PURE__ */ new Map();
   for (const e of events) {
     if (e.kind === "command") {
+      const kind = classifyCommand(e.command);
+      if (kind !== "test" && kind !== "build" && kind !== "lint") {
+        otherCommands += 1;
+        continue;
+      }
       verification.push({
         at: e.at,
-        kind: e.classification,
+        kind,
         command: clean(summariseCommand(e.command)),
         outcome: e.outcome,
         ...e.exitCode !== void 0 ? { exitCode: e.exitCode } : {},
         ...e.durationMs !== void 0 ? { durationMs: e.durationMs } : {}
       });
     } else {
+      if (meta.repoRoot && !insideRepo(e.path, meta.repoRoot)) continue;
       const file = rel(e.path);
-      const existing = changeMap.get(file);
-      if (existing) existing.edits += 1;
-      else changeMap.set(file, { file, edits: 1, role: isTestFile(file) ? "test" : "source" });
+      edits.set(file, (edits.get(file) ?? 0) + 1);
     }
   }
+  const role = (file) => isTestFile(file) ? "test" : "source";
+  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
+  const changes = fromDiff.length > 0 ? [
+    ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
+    ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
+  ] : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags = timeline.map((f) => ({
     ...f,
     file: rel(f.file),
     detail: clean(meta.repoRoot ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail)
   }));
-  const ranATest = events.some((e) => e.kind === "command" && e.classification === "test");
-  if (changeMap.size > 0 && !ranATest) {
+  const ranATest = verification.some((v) => v.kind === "test");
+  if (changes.length > 0 && !ranATest) {
     flags.push({
       code: "NO_TEST_RUN",
       severity: "warn",
       file: "",
-      detail: `${changeMap.size} file(s) changed and no test command was recorded in this session.`,
+      detail: `${changes.length} file(s) changed and no test command was recorded in this session.`,
       evidence: []
     });
   }
@@ -730,7 +819,8 @@ function buildLog(events, meta, decisions = []) {
     sessions: meta.sessions ?? [],
     ...intent !== void 0 ? { intent } : {},
     verification,
-    changes: [...changeMap.values()],
+    otherCommands,
+    changes,
     flags,
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
@@ -750,6 +840,7 @@ var OUTCOME_LABEL = {
 function cell(value) {
   return value.replace(/\|/g, "\\|");
 }
+var MAX_CHANGES = 30;
 function timeOnly(iso) {
   const m = /T(\d{2}:\d{2})/.exec(iso);
   return m?.[1] ?? iso;
@@ -779,26 +870,47 @@ function render(log, options = {}) {
 ${lines.join("\n")}
 `);
   }
+  const others = log.otherCommands ?? 0;
+  const otherNote = others === 0 ? "" : `${others} other command${others === 1 ? "" : "s"}`;
   if (log.verification.length > 0) {
     const rows = log.verification.map(
       (v) => `| ${timeOnly(v.at)} | \`${cell(v.command)}\` | ${OUTCOME_LABEL[v.outcome] ?? v.outcome} |`
     );
+    const note2 = otherNote ? `
+*${otherNote} (file writes, searches, git) not listed.*
+` : "";
     sections.push(`
 ### Verification (recorded)
 
 | When | Command | Result |
 | --- | --- | --- |
 ${rows.join("\n")}
+${note2}`);
+  } else if (otherNote) {
+    sections.push(`
+### Verification (recorded)
+
+No test, build or lint run was recorded. ${otherNote} not listed.
 `);
   }
   if (log.changes.length > 0) {
-    const rows = log.changes.map(
-      (c) => `- \`${c.file}\` - ${c.edits} edit${c.edits === 1 ? "" : "s"}${c.role === "test" ? " (test)" : ""}`
-    );
+    const shown = log.changes.slice(0, MAX_CHANGES);
+    const rows = shown.map((c) => {
+      const tags = [
+        ...c.status && c.status !== "modified" ? [c.status] : [],
+        ...c.role === "test" ? ["test"] : []
+      ];
+      const count2 = c.edits > 0 ? ` - ${c.edits} edit${c.edits === 1 ? "" : "s"}` : "";
+      return `- \`${c.file}\`${tags.length > 0 ? ` (${tags.join(", ")})` : ""}${count2}`;
+    });
+    const rest = log.changes.length - shown.length;
+    const more = rest > 0 ? `
+*and ${rest} more file${rest === 1 ? "" : "s"}.*
+` : "";
     sections.push(`
 ### Changes
 ${rows.join("\n")}
-`);
+${more}`);
   }
   const CLAIM_SECTIONS = [
     { kind: "decision", heading: "Decisions" },
@@ -1927,7 +2039,7 @@ function printTimeline(label, events) {
 `);
   for (const c of commands) {
     if (c.kind !== "command") continue;
-    process.stdout.write(`  [${c.classification}] ${c.outcome.padEnd(11)} ${c.command.split("\n")[0]?.slice(0, 60)}
+    process.stdout.write(`  [${classifyCommand(c.command)}] ${c.outcome.padEnd(11)} ${c.command.split("\n")[0]?.slice(0, 60)}
 `);
   }
   if (flags.length === 0) {

@@ -3,10 +3,11 @@ import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
 import { redact, type RedactionRule } from './redact.ts';
-import { relativize } from './relativize.ts';
+import { insideRepo, relativize } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
-import { analyzeDiff } from '../flags/diff-signals.ts';
+import { classifyCommand } from '../events/classify-command.ts';
+import { analyzeDiff, changedFiles, type FileStatus } from '../flags/diff-signals.ts';
 
 export type Verification = {
   at: string;
@@ -17,7 +18,14 @@ export type Verification = {
   durationMs?: number;
 };
 
-export type Change = { file: string; edits: number; role: 'test' | 'source' };
+export type Change = {
+  file: string;
+  /** Edits the agent made with its edit tools. Zero for a file it wrote another way, such as a shell heredoc. */
+  edits: number;
+  role: 'test' | 'source';
+  /** From the PR diff. `not in diff`: the agent edited it but the diff does not contain it (uncommitted, or reverted). Absent with no diff. */
+  status?: FileStatus | 'not in diff';
+};
 
 export type DecisionLog = {
   schema: 'pdl/1';
@@ -26,7 +34,9 @@ export type DecisionLog = {
   branch: string;
   sessions: string[];
   intent?: string;
+  /** Test, build and lint runs. Every other command is only counted, never listed. */
   verification: Verification[];
+  otherCommands: number;
   changes: Change[];
   flags: Flag[];
   /** Claims, kept in one list with a `kind` and split at render time. */
@@ -75,26 +85,50 @@ export function buildLog(
   const rel = (p: string): string => (meta.repoRoot ? relativize(p, meta.repoRoot) : p);
 
   const verification: Verification[] = [];
-  const changeMap = new Map<string, Change>();
+  let otherCommands = 0;
+  const edits = new Map<string, number>();
 
   for (const e of events) {
     if (e.kind === 'command') {
-      // `summariseCommand` also strips multi-line scripts and absolute paths.
+      // A reviewer acts on test, build and lint results. Everything else an
+      // agent runs (file writes, searches, git) is noise in this table, and
+      // its text is the most likely to hold file contents or private paths.
+      // Classified now, not when recorded: the rules improve, and a stored
+      // kind from an older version once listed a heredoc as a test run.
+      const kind = classifyCommand(e.command);
+      if (kind !== 'test' && kind !== 'build' && kind !== 'lint') {
+        otherCommands += 1;
+        continue;
+      }
+      // `summariseCommand` publishes the runner fragment only.
       verification.push({
         at: e.at,
-        kind: e.classification,
+        kind,
         command: clean(summariseCommand(e.command)),
         outcome: e.outcome,
         ...(e.exitCode !== undefined ? { exitCode: e.exitCode } : {}),
         ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
       });
     } else {
+      // An edit outside the repository is not part of the pull request.
+      if (meta.repoRoot && !insideRepo(e.path, meta.repoRoot)) continue;
       const file = rel(e.path);
-      const existing = changeMap.get(file);
-      if (existing) existing.edits += 1;
-      else changeMap.set(file, { file, edits: 1, role: isTestFile(file) ? 'test' : 'source' });
+      edits.set(file, (edits.get(file) ?? 0) + 1);
     }
   }
+
+  // The PR diff is the list of what changed, however it was written: agents
+  // often write files from the shell, which no edit event records. The edit
+  // tools' counts are added where they exist.
+  const role = (file: string): Change['role'] => (isTestFile(file) ? 'test' : 'source');
+  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
+  const changes: Change[] = fromDiff.length > 0
+    ? [
+        ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
+        ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file))
+          .map(([file, n]) => ({ file, edits: n, role: role(file), status: 'not in diff' as const })),
+      ]
+    : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
 
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags: Flag[] = timeline.map((f) => ({
@@ -104,13 +138,13 @@ export function buildLog(
   }));
 
   // Code changed but nothing verified it.
-  const ranATest = events.some((e) => e.kind === 'command' && e.classification === 'test');
-  if (changeMap.size > 0 && !ranATest) {
+  const ranATest = verification.some((v) => v.kind === 'test');
+  if (changes.length > 0 && !ranATest) {
     flags.push({
       code: 'NO_TEST_RUN',
       severity: 'warn',
       file: '',
-      detail: `${changeMap.size} file(s) changed and no test command was recorded in this session.`,
+      detail: `${changes.length} file(s) changed and no test command was recorded in this session.`,
       evidence: [],
     });
   }
@@ -132,7 +166,8 @@ export function buildLog(
     sessions: meta.sessions ?? [],
     ...(intent !== undefined ? { intent } : {}),
     verification,
-    changes: [...changeMap.values()],
+    otherCommands,
+    changes,
     flags,
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
