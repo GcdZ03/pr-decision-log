@@ -25,8 +25,15 @@ export type PublishResult = {
  * parsed by a shell, and the body travels on stdin rather than in argv, which
  * also avoids the ~256 KB argument-length limit.
  */
-export const realGh: GhRunner = (args, stdin) => {
-  const proc = spawnSync('gh', args, { input: stdin, encoding: 'utf8' });
+export const realGh: GhRunner = (args, stdin) => ghIn(undefined)(args, stdin);
+
+/**
+ * `gh` run from `cwd`, which decides the repository and branch it acts on. A
+ * session can work in a repository other than the one it was started in, so
+ * the publisher runs it from the place the log belongs to.
+ */
+export const ghIn = (cwd: string | undefined): GhRunner => (args, stdin) => {
+  const proc = spawnSync('gh', args, { input: stdin, encoding: 'utf8', ...(cwd ? { cwd } : {}) });
   return {
     ok: proc.status === 0,
     stdout: proc.stdout ?? '',

@@ -14,6 +14,8 @@ export type CommandEvent = {
   /** Parsed from a leading `Exit code N`; only present on failures. */
   exitCode?: number;
   durationMs?: number;
+  /** The directory it ran in: a leading `cd`, else the session's. Absent on events recorded before this existed. */
+  dir?: string;
 };
 
 export type EditEvent = {
@@ -24,6 +26,8 @@ export type EditEvent = {
   /** Absent when unknowable, e.g. a whole-file Write. Never defaulted to 0. */
   assertionsBefore?: number;
   assertionsAfter?: number;
+  /** The edited file's directory, for attributing the edit to a repository. */
+  dir?: string;
 };
 
 export type TimelineEvent = CommandEvent | EditEvent;

@@ -108,3 +108,75 @@ test('with PDL_DISABLE set, the nine payloads record nothing and call nothing', 
   assert.deepEqual(r.turns, []);
   assert.deepEqual(r.ghCalls, []);
 });
+
+// The case that motivated per-event directories: a session started in one
+// repository opened a pull request in a worktree of another, every command
+// prefixed with `cd`. All six such PRs went without a log, because pdl looked
+// for a PR on the starting folder's branch.
+test('a PR opened from a worktree of another repository gets its log there', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdl-elsewhere-'));
+  try {
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    const commit = (cwd: string) => git(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+
+    const notch = join(dir, 'notch');
+    const atlas = join(dir, 'atlas');
+    const wt = join(dir, 'atlas-wt-01');
+    for (const r of [notch, atlas]) { mkdirSync(r); git(r, 'init', '-q', '-b', 'main'); commit(r); }
+    git(atlas, 'worktree', 'add', '-q', '-b', 'm0/01', wt);
+    mkdirSync(join(wt, 'src'));
+    const wtRoot = git(wt, 'rev-parse', '--show-toplevel');
+
+    // gh answers `pr view` with a PR only on the worktree's branch, and keeps
+    // what `pr edit` was given.
+    const bin = join(dir, 'bin');
+    const calls = join(dir, 'gh-calls.txt');
+    const body = join(dir, 'pr-body.md');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), [
+      '#!/bin/sh',
+      `echo "$(git rev-parse --show-toplevel 2>/dev/null)|$(git symbolic-ref --short -q HEAD 2>/dev/null)|$*" >> "${calls}"`,
+      'case "$1 $2" in',
+      `  "pr view") [ "$(git symbolic-ref --short -q HEAD)" = "m0/01" ] || { echo "no pull requests found" >&2; exit 1; }`,
+      `    echo '{"number":18,"body":"Adds the API.","baseRefName":"main","url":"https://github.com/o/atlas/pull/18"}' ;;`,
+      `  "pr edit") cat > "${body}" ;;`,
+      '  *) exit 1 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const session = 'sess-elsewhere';
+    const base = { session_id: session, cwd: notch, transcript_path: join(dir, 'none.jsonl') };
+    const payloads = [
+      { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_use_id: 't1',
+        tool_input: { command: 'cd ../atlas-wt-01 && pytest' }, error: 'Exit code 1\nFAILED src/test_api.py::test_get' },
+      { ...base, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: 't2',
+        tool_input: { file_path: join(wt, 'src', 'api.py'), old_string: 'a', new_string: 'b' }, tool_response: {} },
+      { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 't3',
+        tool_input: { command: `cd ${wt} && gh pr create --fill` },
+        tool_response: { stdout: 'https://github.com/o/atlas/pull/18\n', stderr: '' } },
+      { ...base, hook_event_name: 'Stop' },
+    ];
+
+    const store = join(dir, 'store');
+    for (const payload of payloads) {
+      const p = spawnSync('node', [PDL, 'hook'], {
+        cwd: notch, input: JSON.stringify(payload), encoding: 'utf8',
+        env: { ...process.env, PDL_DISABLE: '', PDL_HOME: store, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+      });
+      assert.equal(p.status, 0, p.stderr);
+    }
+
+    const ghCalls = readFileSync(calls, 'utf8').trim().split('\n');
+    assert.ok(ghCalls.some((c) => c.startsWith(`${wtRoot}|m0/01|pr edit 18`)), ghCalls.join('\n'));
+    assert.ok(!ghCalls.some((c) => c.includes('|main|pr edit')), 'nothing was published to the starting repository');
+
+    const published = readFileSync(body, 'utf8');
+    assert.match(published, /Adds the API\./, 'the author text is kept');
+    assert.match(published, /pytest/);
+    assert.match(published, /`src\/api\.py`/, 'paths are relative to the worktree');
+    assert.doesNotMatch(published, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'no absolute path is published');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

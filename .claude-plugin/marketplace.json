@@ -9,7 +9,7 @@
       "name": "pr-decision-log",
       "source": "./",
       "description": "Records what the agent ran, failed and edited, flags tests changed right after they failed, and publishes a redacted log to the PR.",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "category": "development",
       "homepage": "https://github.com/GcdZ03/pr-decision-log",
       "keywords": [
