@@ -59,6 +59,17 @@ function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): strin
   return `Edited ${when}, after \`${summariseCommand(failure.command)}\` failed at ${failure.at} and before it passed again${counts}.`;
 }
 
+/**
+ * Whether a passing command re-ran the failing one. Agents pipe the same run
+ * differently each time (`pnpm test | tail`, then `pnpm test`), so the runner
+ * fragment decides, not the exact text.
+ */
+function sameRun(a: CommandEvent, b: CommandEvent): boolean {
+  if (a.command === b.command) return true;
+  const fragment = runnerFragment(a.command);
+  return fragment !== undefined && fragment === runnerFragment(b.command);
+}
+
 export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   const flags: Flag[] = [];
   let openFailure: CommandEvent | null = null;
@@ -70,6 +81,7 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   const emit = (failure: CommandEvent) => {
     for (const { first, last } of window.values()) {
       if (isPurelyAdditive(first.assertionsBefore, last.assertionsAfter)) continue;
+      if (first.additive && last.additive) continue; // Appends only: nothing was taken out.
       flags.push({
         code: 'TEST_EDITED_AFTER_FAILURE',
         severity: 'warn',
@@ -83,10 +95,14 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
 
   for (const e of events) {
     if (e.kind === 'command') {
+      // Only a test run opens or closes a window. A failing `sed` or `ls` in
+      // the middle says nothing about the tests, and once split one real
+      // window into two flags.
+      if (classifyCommand(e.command) !== 'test') continue;
       if (e.outcome === 'fail') {
         if (openFailure) emit(openFailure);
         openFailure = e;
-      } else if (e.outcome === 'pass' && openFailure && e.command === openFailure.command) {
+      } else if (e.outcome === 'pass' && openFailure && sameRun(e, openFailure)) {
         // The window closes on green: the failure this command reported is resolved.
         emit(openFailure);
         openFailure = null;

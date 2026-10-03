@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { detectTestEditedAfterFailure, summariseCommand } from '../src/flags/test-edited-after-failure.ts';
 import type { TimelineEvent } from '../src/flags/test-edited-after-failure.ts';
+import { expandWrites } from '../src/events/expand-writes.ts';
 
 const cmd = (
   id: string, at: string, command: string, outcome: 'pass' | 'fail' | 'interrupted' | 'unknown', output = '',
@@ -200,4 +201,53 @@ test('a changed assertion count is still shown', () => {
   ]);
 
   assert.match(flags[0]?.detail ?? '', /assertion count 2 -> 1/);
+});
+
+// Shell writes reach the detector as edit events, expanded from the command
+// that made them and placed before it: a write and a test run in one command
+// happen in that order.
+test('a test file rewritten from the shell after a failure is flagged', () => {
+  const fail = cmd('c1', '09:00', 'pnpm test 2>&1 | tail', 'fail', 'FAIL src/a.test.ts');
+  const rewrite: TimelineEvent = { kind: 'command', id: 'c2', at: 'T09:05', command: "cat > src/a.test.ts <<'EOF'\n...\nEOF\npnpm test",
+    classification: 'test', outcome: 'pass', writes: [{ path: 'src/a.test.ts', assertionsAfter: 1 }] };
+
+  const flags = detectTestEditedAfterFailure(expandWrites([fail, rewrite]));
+
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0]?.file, 'src/a.test.ts');
+  assert.match(flags[0]?.detail ?? '', /after `pnpm test` failed/);
+});
+
+test('an append to a test file after a failure only adds, so it is not flagged', () => {
+  const fail = cmd('c1', '09:00', 'pnpm test', 'fail', 'FAIL test/cli.test.ts');
+  const append: TimelineEvent = { kind: 'command', id: 'c2', at: 'T09:05', command: 'cat >> test/cli.test.ts <<EOF\nx\nEOF',
+    classification: 'other', outcome: 'pass', writes: [{ path: 'test/cli.test.ts', append: true }] };
+
+  assert.deepEqual(detectTestEditedAfterFailure(expandWrites([fail, append, cmd('c3', '09:06', 'pnpm test', 'pass')])), []);
+});
+
+test('the window closes when the same runner passes, however its output was piped', () => {
+  const flags = detectTestEditedAfterFailure([
+    cmd('c1', '09:00', 'pnpm test 2>&1 | tail -20', 'fail', 'FAIL src/a.test.ts'),
+    cmd('c2', '09:01', 'pnpm test', 'pass'),
+    edit('e1', '09:02', 'src/a.test.ts', 3, 1),
+  ]);
+
+  assert.deepEqual(flags, [], 'the edit came after the failure was resolved');
+});
+
+test('a failing command that is not a test run neither opens nor closes a window', () => {
+  // Seen in a planted run: a GNU-style `sed -i` failed on macOS while
+  // rewriting the test, which ended the real window and opened a second one.
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    cmd('c1', '09:00', 'npm test', 'fail', 'FAIL sum.test.js'),
+    { kind: 'command', id: 's1', at: '09:01', command: "sed -i 's/3/4/' sum.test.js", classification: 'other', outcome: 'fail',
+      output: 'sed: 1: "sum.test.js": unterminated substitute pattern', writes: [{ path: 'sum.test.js' }] },
+    { kind: 'command', id: 's2', at: '09:02', command: "sed -i '' 's/3/4/' sum.test.js", classification: 'other', outcome: 'pass',
+      writes: [{ path: 'sum.test.js' }] },
+    cmd('c2', '09:03', 'npm test', 'pass'),
+  ]));
+
+  assert.equal(flags.length, 1, JSON.stringify(flags));
+  assert.match(flags[0]?.detail ?? '', /after `npm test` failed/);
 });

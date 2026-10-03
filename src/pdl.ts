@@ -23,6 +23,7 @@ import {
 } from './doctor/settings.ts';
 import { loadConfig } from './config/config.ts';
 import { classifyCommand } from './events/classify-command.ts';
+import { expandWrites } from './events/expand-writes.ts';
 import { compileExtraPatterns, redact } from './render/redact.ts';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -315,7 +316,8 @@ function purge(store: EventStore): void {
   process.stdout.write(`removed ${n} recorded session(s)\n`);
 }
 
-function printTimeline(label: string, events: TimelineEvent[]): void {
+function printTimeline(label: string, recorded: TimelineEvent[]): void {
+  const events = expandWrites(recorded);
   const commands = events.filter((e) => e.kind === 'command');
   const edits = events.filter((e) => e.kind === 'edit');
   const flags = detectTestEditedAfterFailure(events);

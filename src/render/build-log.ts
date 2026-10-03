@@ -7,6 +7,7 @@ import { insideRepo, relativize } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
 import { classifyCommand } from '../events/classify-command.ts';
+import { expandWrites } from '../events/expand-writes.ts';
 import { analyzeDiff, changedFiles, type FileStatus } from '../flags/diff-signals.ts';
 
 export type Verification = {
@@ -20,7 +21,7 @@ export type Verification = {
 
 export type Change = {
   file: string;
-  /** Edits the agent made with its edit tools. Zero for a file it wrote another way, such as a shell heredoc. */
+  /** Times the agent wrote the file: edit-tool edits and shell writes (`cat >`, `sed -i`, a script). */
   edits: number;
   role: 'test' | 'source';
   /** From the PR diff. `not in diff`: the agent edited it but the diff does not contain it (uncommitted, or reverted). Absent with no diff. */
@@ -71,10 +72,13 @@ export type LogMeta = {
  * renderer can see has passed through here first.
  */
 export function buildLog(
-  events: TimelineEvent[],
+  recorded: TimelineEvent[],
   meta: LogMeta,
   decisions: Decision[] = [],
 ): DecisionLog {
+  // Files written from the shell join the timeline as edits, so the flags and
+  // the change list see them like any edit-tool edit.
+  const events = expandWrites(recorded);
   const rules = new Set<string>();
   const clean = (s: string): string => {
     const { text, hits } = redact(s, meta.extraRedactions);
@@ -87,6 +91,7 @@ export function buildLog(
   const verification: Verification[] = [];
   let otherCommands = 0;
   const edits = new Map<string, number>();
+  const viaShellOnly = new Set<string>();
 
   for (const e of events) {
     if (e.kind === 'command') {
@@ -113,6 +118,8 @@ export function buildLog(
       // An edit outside the repository is not part of the pull request.
       if (meta.repoRoot && !insideRepo(e.path, meta.repoRoot)) continue;
       const file = rel(e.path);
+      if (e.via === 'shell' && !edits.has(file)) viaShellOnly.add(file);
+      if (e.via !== 'shell') viaShellOnly.delete(file);
       edits.set(file, (edits.get(file) ?? 0) + 1);
     }
   }
@@ -125,7 +132,9 @@ export function buildLog(
   const changes: Change[] = fromDiff.length > 0
     ? [
         ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
-        ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file))
+        // A file only ever written from the shell and absent from the diff is
+        // a log, a scratch file or build output, not part of the change.
+        ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file) && !viaShellOnly.has(file))
           .map(([file, n]) => ({ file, edits: n, role: role(file), status: 'not in diff' as const })),
       ]
     : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));

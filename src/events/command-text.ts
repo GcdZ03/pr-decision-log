@@ -1,20 +1,34 @@
-/** `<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`: the delimiter that ends a heredoc body. */
-const HEREDOC_RE = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+/** `<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`: the delimiter that ends a heredoc body. Not `<<<`, a here-string. */
+const HEREDOC_RE = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
 
-function stripHeredocs(command: string): string {
+/**
+ * The command with heredoc bodies taken out, and the bodies, in the order
+ * their `<<` operators appear. The `<<` lines themselves are kept.
+ */
+export function splitHeredocs(command: string): { text: string; bodies: string[] } {
   const out: string[] = [];
-  const pending: { delimiter: string; tabs: boolean }[] = [];
+  const bodies: string[] = [];
+  const pending: { delimiter: string; tabs: boolean; lines: string[] }[] = [];
 
   for (const line of command.split('\n')) {
     const open = pending[0];
     if (open) {
-      if ((open.tabs ? line.replace(/^\t+/, '') : line) === open.delimiter) pending.shift();
-      continue; // Body text: whatever the agent was writing to a file.
+      if ((open.tabs ? line.replace(/^\t+/, '') : line) === open.delimiter) {
+        bodies.push(open.lines.join('\n'));
+        pending.shift();
+      } else open.lines.push(line);
+      continue;
     }
     out.push(line);
-    for (const m of line.matchAll(HEREDOC_RE)) pending.push({ delimiter: m[3] ?? '', tabs: m[1] === '-' });
+    for (const m of line.matchAll(HEREDOC_RE)) pending.push({ delimiter: m[3] ?? '', tabs: m[1] === '-', lines: [] });
   }
-  return out.join('\n');
+  // An unterminated heredoc runs to the end of the script, as in the shell.
+  for (const open of pending) bodies.push(open.lines.join('\n'));
+  return { text: out.join('\n'), bodies };
+}
+
+function stripHeredocs(command: string): string {
+  return splitHeredocs(command).text;
 }
 
 /**

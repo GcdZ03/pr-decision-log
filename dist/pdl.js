@@ -147,20 +147,28 @@ var EventStore = class {
 };
 
 // src/events/command-text.ts
-var HEREDOC_RE = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
-function stripHeredocs(command2) {
+var HEREDOC_RE = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+function splitHeredocs(command2) {
   const out = [];
+  const bodies = [];
   const pending = [];
   for (const line of command2.split("\n")) {
     const open = pending[0];
     if (open) {
-      if ((open.tabs ? line.replace(/^\t+/, "") : line) === open.delimiter) pending.shift();
+      if ((open.tabs ? line.replace(/^\t+/, "") : line) === open.delimiter) {
+        bodies.push(open.lines.join("\n"));
+        pending.shift();
+      } else open.lines.push(line);
       continue;
     }
     out.push(line);
-    for (const m of line.matchAll(HEREDOC_RE)) pending.push({ delimiter: m[3] ?? "", tabs: m[1] === "-" });
+    for (const m of line.matchAll(HEREDOC_RE)) pending.push({ delimiter: m[3] ?? "", tabs: m[1] === "-", lines: [] });
   }
-  return out.join("\n");
+  for (const open of pending) bodies.push(open.lines.join("\n"));
+  return { text: out.join("\n"), bodies };
+}
+function stripHeredocs(command2) {
+  return splitHeredocs(command2).text;
 }
 function blankQuotes(text) {
   let out = "";
@@ -332,8 +340,209 @@ function commandDir(command2, cwd, home = homedir2()) {
   return dir;
 }
 
+// src/events/shell-writes.ts
+import { homedir as homedir3 } from "node:os";
+import { isAbsolute, resolve as resolve2 } from "node:path";
+var SEPARATORS = /* @__PURE__ */ new Set([";", "&&", "||", "|", "&", "(", ")"]);
+function tokenize(text) {
+  const out = [];
+  let word;
+  const flush = () => {
+    if (word) out.push(word);
+    word = void 0;
+  };
+  const w = () => word ??= { k: "w", v: "", dynamic: false };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const rest = text.slice(i);
+    if (c === "\n") {
+      flush();
+      out.push({ k: "op", v: ";" });
+      continue;
+    }
+    if (c === " " || c === "	") {
+      flush();
+      continue;
+    }
+    if (c === "#" && !word) {
+      while (i + 1 < text.length && text[i + 1] !== "\n") i++;
+      continue;
+    }
+    if (c === "\\") {
+      w().v += text[i + 1] ?? "";
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      w().v += text.slice(i + 1, end === -1 ? void 0 : end);
+      i = end === -1 ? text.length : end;
+      continue;
+    }
+    if (c === '"') {
+      const cur = w();
+      for (i++; i < text.length && text[i] !== '"'; i++) {
+        if (text[i] === "\\") {
+          cur.v += text[i + 1] ?? "";
+          i++;
+          continue;
+        }
+        if (text[i] === "$" || text[i] === "`") cur.dynamic = true;
+        cur.v += text[i];
+      }
+      continue;
+    }
+    if (c === "$" || c === "`") {
+      const cur = w();
+      cur.dynamic = true;
+      if (c === "`") {
+        const end = text.indexOf("`", i + 1);
+        i = end === -1 ? text.length : end;
+        continue;
+      }
+      if (text[i + 1] === "(") {
+        let depth = 0;
+        for (; i < text.length; i++) {
+          if (text[i] === "(") depth++;
+          else if (text[i] === ")" && --depth === 0) break;
+        }
+        continue;
+      }
+      cur.v += c;
+      continue;
+    }
+    if ((c === ">" || c === "<") && word && /^\d+$/.test(word.v) && !word.dynamic) {
+      word = void 0;
+      const op2 = rest.startsWith(">>") ? ">>" : rest.startsWith(">&") ? ">&" : c;
+      out.push({ k: "op", v: `fd${op2}` });
+      i += op2.length - 1;
+      continue;
+    }
+    const op = ["&&", "||", "<<<", "<<-", "<<", ">>", ">|", ">&", "&>", "|", ";", "&", "(", ")", ">", "<"].find((o) => rest.startsWith(o));
+    if (op) {
+      flush();
+      out.push({ k: "op", v: op });
+      i += op.length - 1;
+      continue;
+    }
+    w().v += c;
+  }
+  flush();
+  return out;
+}
+function simpleCommands(tokens, bodies) {
+  const out = [];
+  let cur = { words: [], outputs: [], piped: false };
+  let nextBody = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k === "w") {
+      cur.words.push(t);
+      continue;
+    }
+    if (SEPARATORS.has(t.v)) {
+      out.push(cur);
+      cur = { words: [], outputs: [], piped: t.v === "|" };
+      continue;
+    }
+    const target = tokens[i + 1];
+    if (target?.k !== "w") continue;
+    i++;
+    if (t.v === ">" || t.v === ">>" || t.v === ">|") cur.outputs.push({ path: target, append: t.v === ">>" });
+    else if (t.v === "<<" || t.v === "<<-") cur.body = bodies[nextBody++];
+  }
+  out.push(cur);
+  return out;
+}
+var PREFIX_WORDS = /* @__PURE__ */ new Set(["sudo", "env", "command", "exec", "time", "nohup", "nice"]);
+function commandName(words) {
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i].v) || PREFIX_WORDS.has(words[i].v))) i++;
+  return { name: words[i]?.v ?? "", args: words.slice(i + 1) };
+}
+var operands = (args) => args.filter((a) => !a.v.startsWith("-"));
+function sedFiles(args) {
+  let inPlace = false;
+  let script = false;
+  const files = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.v === "-i" || a.v === "-I") {
+      inPlace = true;
+      const next = args[i + 1];
+      if (next && (next.v === "" || /^\.\w+$/.test(next.v))) i++;
+    } else if (/^-[iI]\S/.test(a.v) || a.v === "--in-place" || a.v.startsWith("--in-place=")) inPlace = true;
+    else if (a.v === "-e" || a.v === "-f" || a.v === "--expression") {
+      script = true;
+      i++;
+    } else if (a.v.startsWith("-")) continue;
+    else if (!script) script = true;
+    else files.push(a);
+  }
+  return inPlace ? files : [];
+}
+function scriptWrites(body) {
+  const assignments = [...body.matchAll(/(?:^|[;\n]|\b(?:const|let|var)\s)\s*(\w+)\s*=\s*(['"])([^'"\n]+)\2/g)].map((m) => ({ at: m.index, name: m[1], value: m[3] }));
+  const valueAt = (name, at) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
+  const found = [];
+  for (const m of body.matchAll(/\bopen\(\s*(?:(['"])([^'"\n]+)\1|(\w+))\s*,\s*(['"])([^'"\n]*)\4/g)) {
+    const path = m[2] ?? valueAt(m[3], m.index);
+    if (path && /[wax]/.test(m[5])) found.push({ at: m.index, path, append: m[5].includes("a") });
+  }
+  for (const m of body.matchAll(/\bPath\(\s*(['"])([^'"\n]+)\1\s*\)\.write_(?:text|bytes)\(/g)) {
+    found.push({ at: m.index, path: m[2], append: false });
+  }
+  for (const m of body.matchAll(/\b(writeFileSync|appendFileSync|writeFile|appendFile)\(\s*(?:(['"`])([^'"`\n$]+)\2|(\w+))/g)) {
+    const path = m[3] ?? valueAt(m[4], m.index);
+    if (path) found.push({ at: m.index, path, append: m[1].startsWith("append") });
+  }
+  return found.sort((a, b) => a.at - b.at).map(({ path, append }) => ({ path, append }));
+}
+var INTERPRETERS = /^(?:python3?(?:\.\d+)?|node|ruby)$/;
+function shellWrites(command2, cwd, home = homedir3()) {
+  const { text, bodies } = splitHeredocs(command2);
+  let dir = cwd;
+  const place = (p) => {
+    if (p === "" || p.startsWith("/dev/")) return void 0;
+    const expanded = p === "~" || p.startsWith("~/") ? home + p.slice(1) : p;
+    if (isAbsolute(expanded)) return resolve2(expanded);
+    return dir ? resolve2(dir, expanded) : expanded;
+  };
+  const writes = [];
+  const add = (word, append, content) => {
+    if (typeof word !== "string" && word.dynamic) return;
+    const raw = typeof word === "string" ? word : word.v;
+    if (raw.endsWith("/") || raw === "." || raw === "..") return;
+    const path = place(raw);
+    if (!path) return;
+    const seen = writes.find((x) => x.path === path);
+    if (seen) {
+      if (!append) seen.append = false;
+      return;
+    }
+    writes.push({ path, append, ...content !== void 0 ? { content } : {} });
+  };
+  for (const cmd of simpleCommands(tokenize(text), bodies)) {
+    const { name, args } = commandName(cmd.words);
+    if ((name === "cd" || name === "pushd") && args[0] && !args[0].dynamic && args[0].v !== "-") {
+      dir = place(args[0].v) ?? dir;
+      continue;
+    }
+    const verbatim = name === "cat" && operands(args).length === 0 && !cmd.piped ? cmd.body : void 0;
+    for (const o of cmd.outputs) add(o.path, o.append, verbatim);
+    if (name === "tee") for (const a of operands(args)) add(a, args.some((x) => x.v === "-a" || x.v === "--append"));
+    if (name === "sed") for (const f of sedFiles(args)) add(f, false);
+    if (name === "cp" || name === "mv" || name === "install") {
+      const ops = operands(args);
+      if (ops.length >= 2) add(ops[ops.length - 1], false);
+    }
+    if (INTERPRETERS.test(name) && cmd.body) for (const s of scriptWrites(cmd.body)) add(s.path, s.append);
+  }
+  return writes;
+}
+
 // src/events/normalize.ts
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute as isAbsolute2 } from "node:path";
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 var WRITE_TOOLS = /* @__PURE__ */ new Set(["Write"]);
 function parseExitCode(error) {
@@ -355,6 +564,12 @@ function normalize(payload, recordedAt) {
     const command2 = str(input["command"]) ?? "";
     const classification = classifyCommand(command2);
     const dir = cwd ? { dir: commandDir(command2, cwd) } : {};
+    const written = shellWrites(command2, cwd).map((w) => ({
+      path: w.path,
+      ...w.append ? { append: true } : {},
+      ...w.content !== void 0 && !w.append ? { assertionsAfter: countAssertions(w.content) } : {}
+    }));
+    const writes = written.length > 0 ? { writes: written } : {};
     if (event === "PostToolUseFailure") {
       const error = str(payload["error"]) ?? "";
       return {
@@ -367,7 +582,8 @@ function normalize(payload, recordedAt) {
         output: error,
         exitCode: parseExitCode(error),
         durationMs,
-        ...dir
+        ...dir,
+        ...writes
       };
     }
     const response = obj(payload["tool_response"]) ?? {};
@@ -385,13 +601,14 @@ function normalize(payload, recordedAt) {
       outcome: interrupted ? "interrupted" : masked ? "fail" : "pass",
       output,
       durationMs,
-      ...dir
+      ...dir,
+      ...writes
     };
   }
   if (EDIT_TOOLS.has(tool ?? "") || WRITE_TOOLS.has(tool ?? "")) {
     const path = str(input["file_path"]) ?? str(input["notebook_path"]) ?? "";
     if (!path) return null;
-    const dir = isAbsolute(path) ? { dir: dirname(path) } : {};
+    const dir = isAbsolute2(path) ? { dir: dirname(path) } : {};
     if (WRITE_TOOLS.has(tool ?? "")) {
       return { kind: "edit", id, at: recordedAt, path, ...dir };
     }
@@ -459,6 +676,11 @@ function detail(failure, first, last) {
   const when = first.id === last.id ? `at ${first.at}` : `${first.at}-${last.at}`;
   return `Edited ${when}, after \`${summariseCommand(failure.command)}\` failed at ${failure.at} and before it passed again${counts}.`;
 }
+function sameRun(a, b) {
+  if (a.command === b.command) return true;
+  const fragment2 = runnerFragment(a.command);
+  return fragment2 !== void 0 && fragment2 === runnerFragment(b.command);
+}
 function detectTestEditedAfterFailure(events) {
   const flags = [];
   let openFailure = null;
@@ -466,6 +688,7 @@ function detectTestEditedAfterFailure(events) {
   const emit = (failure) => {
     for (const { first, last } of window.values()) {
       if (isPurelyAdditive(first.assertionsBefore, last.assertionsAfter)) continue;
+      if (first.additive && last.additive) continue;
       flags.push({
         code: "TEST_EDITED_AFTER_FAILURE",
         severity: "warn",
@@ -478,10 +701,11 @@ function detectTestEditedAfterFailure(events) {
   };
   for (const e of events) {
     if (e.kind === "command") {
+      if (classifyCommand(e.command) !== "test") continue;
       if (e.outcome === "fail") {
         if (openFailure) emit(openFailure);
         openFailure = e;
-      } else if (e.outcome === "pass" && openFailure && e.command === openFailure.command) {
+      } else if (e.outcome === "pass" && openFailure && sameRun(e, openFailure)) {
         emit(openFailure);
         openFailure = null;
       }
@@ -550,25 +774,44 @@ function redact(input, extra = []) {
 }
 
 // src/render/relativize.ts
-import { basename, isAbsolute as isAbsolute2, relative, resolve as resolve2 } from "node:path";
+import { basename, isAbsolute as isAbsolute3, relative, resolve as resolve3 } from "node:path";
 function insideRepo(path, repoRoot2) {
-  if (!isAbsolute2(path)) return true;
-  const root = resolve2(repoRoot2);
+  if (!isAbsolute3(path)) return true;
+  const root = resolve3(repoRoot2);
   return [root, root.replace(/^\/private\//, "/"), `/private${root}`].some((base) => {
     const rel = relative(base, path);
-    return rel !== "" && !rel.startsWith("..") && !isAbsolute2(rel);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute3(rel);
   });
 }
 function relativize(path, repoRoot2) {
   if (!path) return path;
-  if (!isAbsolute2(path)) return path;
-  const root = resolve2(repoRoot2);
+  if (!isAbsolute3(path)) return path;
+  const root = resolve3(repoRoot2);
   const candidates = [root, root.replace(/^\/private\//, "/"), `/private${root}`];
   for (const base of candidates) {
     const rel = relative(base, path);
-    if (rel && !rel.startsWith("..") && !isAbsolute2(rel)) return rel;
+    if (rel && !rel.startsWith("..") && !isAbsolute3(rel)) return rel;
   }
   return basename(path);
+}
+
+// src/events/expand-writes.ts
+import { dirname as dirname2, isAbsolute as isAbsolute4 } from "node:path";
+function expandWrites(events) {
+  return events.flatMap((e) => {
+    if (e.kind !== "command" || !e.writes?.length) return [e];
+    const edits = e.writes.map((w, i) => ({
+      kind: "edit",
+      id: `${e.id}#write${i}`,
+      at: e.at,
+      path: w.path,
+      via: "shell",
+      ...isAbsolute4(w.path) ? { dir: dirname2(w.path) } : {},
+      ...w.append ? { additive: true } : {},
+      ...w.assertionsAfter !== void 0 ? { assertionsAfter: w.assertionsAfter } : {}
+    }));
+    return [...edits, e];
+  });
 }
 
 // src/flags/diff-signals.ts
@@ -752,7 +995,8 @@ function analyzeDiff(diff, options = {}) {
 }
 
 // src/render/build-log.ts
-function buildLog(events, meta, decisions = []) {
+function buildLog(recorded, meta, decisions = []) {
+  const events = expandWrites(recorded);
   const rules = /* @__PURE__ */ new Set();
   const clean = (s) => {
     const { text, hits } = redact(s, meta.extraRedactions);
@@ -763,6 +1007,7 @@ function buildLog(events, meta, decisions = []) {
   const verification = [];
   let otherCommands = 0;
   const edits = /* @__PURE__ */ new Map();
+  const viaShellOnly = /* @__PURE__ */ new Set();
   for (const e of events) {
     if (e.kind === "command") {
       const kind = classifyCommand(e.command);
@@ -781,6 +1026,8 @@ function buildLog(events, meta, decisions = []) {
     } else {
       if (meta.repoRoot && !insideRepo(e.path, meta.repoRoot)) continue;
       const file = rel(e.path);
+      if (e.via === "shell" && !edits.has(file)) viaShellOnly.add(file);
+      if (e.via !== "shell") viaShellOnly.delete(file);
       edits.set(file, (edits.get(file) ?? 0) + 1);
     }
   }
@@ -788,7 +1035,9 @@ function buildLog(events, meta, decisions = []) {
   const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   const changes = fromDiff.length > 0 ? [
     ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
-    ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
+    // A file only ever written from the shell and absent from the diff is
+    // a log, a scratch file or build output, not part of the change.
+    ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file) && !viaShellOnly.has(file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
   ] : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags = timeline.map((f) => ({
@@ -1014,7 +1263,7 @@ async function publish(options) {
 
 // src/publish/auto-publish.ts
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 
 // src/publish/publish-comment.ts
 var MARKER_START2 = "<!-- pdl:start";
@@ -1067,7 +1316,7 @@ var FilePublishState = class {
     const all = this.#all();
     all[key] = value;
     try {
-      mkdirSync2(dirname2(this.path), { recursive: true, mode: 448 });
+      mkdirSync2(dirname3(this.path), { recursive: true, mode: 448 });
       writeFileSync2(this.path, JSON.stringify(all));
     } catch {
     }
@@ -1183,11 +1432,11 @@ function sessionsForBranch(turns, repo, branch) {
   }
   return out;
 }
-function planTurn(events, home, resolve4) {
+function planTurn(events, home, resolve5) {
   const resolved = /* @__PURE__ */ new Map();
   for (const e of events) {
     if (e.dir === void 0 || resolved.has(e.dir)) continue;
-    const p = resolve4(e.dir);
+    const p = resolve5(e.dir);
     if (p && !samePlace(p, home)) resolved.set(e.dir, p);
   }
   const touched = [];
@@ -1544,8 +1793,8 @@ function extractDecisions(entries, options = {}) {
 // src/extract/find-transcript.ts
 import { readdirSync as readdirSync2, existsSync } from "node:fs";
 import { join as join2 } from "node:path";
-import { homedir as homedir3 } from "node:os";
-var DEFAULT_ROOT = join2(homedir3(), ".claude", "projects");
+import { homedir as homedir4 } from "node:os";
+var DEFAULT_ROOT = join2(homedir4(), ".claude", "projects");
 function findTranscript(sessionId, root = DEFAULT_ROOT) {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(sessionId) || sessionId.startsWith(".")) return void 0;
   let dirs;
@@ -1613,11 +1862,11 @@ function removeHooks(settings) {
 
 // src/doctor/settings.ts
 import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, realpathSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname3, join as join3, resolve as resolve3 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { dirname as dirname4, join as join3, resolve as resolve4 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 function settingsPathFor(scope, repoRoot2) {
-  return scope === "user" ? join3(homedir4(), ".claude", "settings.json") : join3(repoRoot2, ".claude", "settings.json");
+  return scope === "user" ? join3(homedir5(), ".claude", "settings.json") : join3(repoRoot2, ".claude", "settings.json");
 }
 function readSettings(path) {
   try {
@@ -1635,13 +1884,13 @@ function settingsExist(path) {
   }
 }
 function writeSettings(path, settings) {
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync3(dirname4(path), { recursive: true });
   writeFileSync3(path, `${JSON.stringify(settings, null, 2)}
 `);
 }
 function hookCommand(entry = process.argv[1] ?? "pdl", scope = "project", root = repoRoot()) {
-  const abs = resolve3(entry);
-  const prefix = `${resolve3(root)}/`;
+  const abs = resolve4(entry);
+  const prefix = `${resolve4(root)}/`;
   const path = scope === "project" && abs.startsWith(prefix) ? `$CLAUDE_PROJECT_DIR/${abs.slice(prefix.length)}` : abs;
   return `node "${path}" hook`;
 }
@@ -1654,7 +1903,7 @@ function repoRoot() {
   const p = spawnSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
   return p.status === 0 ? (p.stdout ?? "").trim() : process.cwd();
 }
-function trustState(root, statePath = join3(homedir4(), ".claude.json")) {
+function trustState(root, statePath = join3(homedir5(), ".claude.json")) {
   let projects;
   try {
     projects = JSON.parse(readFileSync4(statePath, "utf8")).projects;
@@ -1662,7 +1911,7 @@ function trustState(root, statePath = join3(homedir4(), ".claude.json")) {
     return "unreadable";
   }
   if (typeof projects !== "object" || projects === null) return "unknown-folder";
-  const entry = projects[resolve3(root)];
+  const entry = projects[resolve4(root)];
   if (!entry) return "unknown-folder";
   return entry.hasTrustDialogAccepted === true ? "accepted" : "not-accepted";
 }
@@ -1679,10 +1928,10 @@ var real = (p) => {
   try {
     return realpathSync(p);
   } catch {
-    return resolve3(p);
+    return resolve4(p);
   }
 };
-function pluginHooks(root, installedPath = join3(homedir4(), ".claude", "plugins", "installed_plugins.json"), userSettingsPath = join3(homedir4(), ".claude", "settings.json")) {
+function pluginHooks(root, installedPath = join3(homedir5(), ".claude", "plugins", "installed_plugins.json"), userSettingsPath = join3(homedir5(), ".claude", "settings.json")) {
   const plugins = readJson(installedPath)["plugins"];
   if (typeof plugins !== "object" || plugins === null) return { active: false, events: [] };
   const settings = [
@@ -1706,13 +1955,13 @@ function pluginHooks(root, installedPath = join3(homedir4(), ".claude", "plugins
 // src/config/config.ts
 import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join4 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 var DEFAULT_CONFIG = {
   publish: { mode: "body", max_chars: 12e3, on_pr_create: true },
   extract: { decision_markers: [] },
   tests: { flag_edit_after_failure: true },
   redaction: { extra_patterns: [] },
-  store: { dir: join4(homedir5(), ".local", "share", "pdl"), retention_days: 30 },
+  store: { dir: join4(homedir6(), ".local", "share", "pdl"), retention_days: 30 },
   problems: []
 };
 var PUBLISH_MODES = ["body", "comment"];
@@ -1737,7 +1986,7 @@ function readJson2(path, problems) {
   }
 }
 function expandHome(p) {
-  return p.startsWith("~/") ? join4(homedir5(), p.slice(2)) : p;
+  return p.startsWith("~/") ? join4(homedir6(), p.slice(2)) : p;
 }
 function applySection(name, base, raw, problems) {
   if (raw === void 0) return base;
@@ -1799,7 +2048,7 @@ function merge(base, raw, problems) {
   merged.store = { ...merged.store, dir: expandHome(merged.store.dir) };
   return merged;
 }
-function loadConfig(repoRoot2, userDir = join4(homedir5(), ".config", "pdl")) {
+function loadConfig(repoRoot2, userDir = join4(homedir6(), ".config", "pdl")) {
   const problems = [];
   const user = readJson2(join4(userDir, "config.json"), problems);
   const repo = readJson2(join4(repoRoot2, "pdl.config.json"), problems);
@@ -1899,14 +2148,14 @@ async function publishCmd(store2, sessionId, prNumber, dryRun) {
 `);
 }
 function readStdin() {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     let buf = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => {
       buf += c;
     });
-    process.stdin.on("end", () => resolve4(buf));
-    process.stdin.on("error", () => resolve4(""));
+    process.stdin.on("end", () => resolve5(buf));
+    process.stdin.on("error", () => resolve5(""));
   });
 }
 async function hook(store2) {
@@ -2029,7 +2278,8 @@ function purge(store2) {
   process.stdout.write(`removed ${n} recorded session(s)
 `);
 }
-function printTimeline(label, events) {
+function printTimeline(label, recorded) {
+  const events = expandWrites(recorded);
   const commands = events.filter((e) => e.kind === "command");
   const edits = events.filter((e) => e.kind === "edit");
   const flags = detectTestEditedAfterFailure(events);

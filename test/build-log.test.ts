@@ -176,3 +176,27 @@ test('commands are classified when the log is built, so a stored misclassificati
   assert.equal(log.verification.length, 0);
   assert.equal(log.otherCommands, 1);
 });
+
+const writer = (id: string, command: string, writes: { path: string; append?: true; assertionsAfter?: number }[],
+  outcome: 'pass' | 'fail' = 'pass', output = ''): TimelineEvent =>
+  ({ kind: 'command', id, at: '2026-09-19T09:00:00Z', command, classification: 'other', outcome, output, writes });
+
+test('a test rewritten from the shell after a failure is flagged in the log', () => {
+  const log = buildLog([
+    { kind: 'command', id: 'c1', at: '2026-09-19T09:00:00Z', command: 'pnpm test', classification: 'test', outcome: 'fail', output: 'FAIL src/api.test.ts' },
+    writer('w1', "cat > src/api.test.ts <<'EOF'\nit.todo('x');\nEOF", [{ path: '/repo/src/api.test.ts', assertionsAfter: 0 }]),
+    { kind: 'command', id: 'c2', at: '2026-09-19T09:02:00Z', command: 'pnpm test', classification: 'test', outcome: 'pass' },
+  ], { ...meta, repoRoot: '/repo' });
+
+  const flag = log.flags.find((f) => f.code === 'TEST_EDITED_AFTER_FAILURE');
+  assert.equal(flag?.file, 'src/api.test.ts');
+});
+
+test('shell writes count toward files in the diff, and a scratch file the diff lacks is left out', () => {
+  const log = buildLog([
+    writer('w1', 'x', [{ path: '/repo/src/api.ts' }, { path: '/repo/out.log' }]),
+  ], { ...meta, repoRoot: '/repo', diff: DIFF });
+
+  assert.equal(log.changes.find((c) => c.file === 'src/api.ts')?.edits, 1);
+  assert.ok(!log.changes.some((c) => c.file === 'out.log'));
+});
