@@ -96,3 +96,60 @@ test('output piped into a reader that stops early ends quietly, not with a stack
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// `pdl remove --help` once ran the removal: every command ignored flags it did
+// not know, so asking how a command works did what the command does. Help must
+// never have a side effect, on any command.
+const COMMANDS = ['doctor', 'init', 'remove', 'sessions', 'show', 'build', 'publish', 'purge', 'redact-check', 'hook'];
+
+test('pdl --help, -h and help print usage and succeed', () => {
+  withRepo(({ run }) => {
+    for (const args of [['--help'], ['-h'], ['help']]) {
+      const r = run(...args);
+
+      assert.equal(r.code, 0, `${args.join(' ')}: ${r.err}`);
+      assert.match(r.out, /usage: pdl/, args.join(' '));
+      for (const c of COMMANDS) assert.match(r.out, new RegExp(`\\b${c}\\b`), `${args.join(' ')} lists ${c}`);
+    }
+  });
+});
+
+test('--help on any command prints usage and changes nothing', () => {
+  withRepo(({ repo, run }) => {
+    run('init');
+    const settings = readFileSync(join(repo, '.claude', 'settings.json'), 'utf8');
+
+    for (const c of COMMANDS) {
+      for (const flag of ['--help', '-h']) {
+        const r = spawnSync('node', [PDL, c, flag], { cwd: repo, encoding: 'utf8', input: '', env: { ...process.env, PDL_HOME: join(repo, '..', 'store') } });
+
+        assert.equal(r.status, 0, `${c} ${flag}: ${r.stderr}`);
+        assert.match(r.stdout, /usage: pdl/, `${c} ${flag}`);
+      }
+    }
+
+    assert.equal(readFileSync(join(repo, '.claude', 'settings.json'), 'utf8'), settings, 'remove/init --help left settings alone');
+    assert.match(run('sessions').out, /sess-cli-1/, 'purge --help left the recorded session alone');
+  });
+});
+
+test('pdl with no command or an unknown one prints usage and fails', () => {
+  withRepo(({ run }) => {
+    for (const args of [[], ['frobnicate']]) {
+      const r = run(...args);
+
+      assert.equal(r.code, 2, args.join(' '));
+      assert.match(r.err, /usage: pdl/);
+    }
+  });
+});
+
+test('an unknown flag is refused before the command runs', () => {
+  withRepo(({ run }) => {
+    const r = run('purge', '--dry-run');
+
+    assert.equal(r.code, 2);
+    assert.match(r.err, /unknown option --dry-run/);
+    assert.match(run('sessions').out, /sess-cli-1/, 'purge did not run');
+  });
+});

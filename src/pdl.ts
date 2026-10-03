@@ -352,7 +352,49 @@ const store = new EventStore(storeRoot);
 const publishState = new FilePublishState(join(storeRoot, 'publish-state.json'));
 const [command, arg] = process.argv.slice(2);
 
-switch (command) {
+const USAGE = `usage: pdl <command>
+
+  doctor                   check the install, with a remedy for each problem
+  init [--user]            register hooks in this repo's .claude/settings.json, or ~/.claude/settings.json
+  remove [--user]          take pdl's hooks back out of that settings file
+  sessions [--all]         list recorded sessions for this repository, newest first
+  show [session]           print the recorded timeline and flags: the branch's, or one session's
+  build [session]          print the log without publishing: the branch's, or one session's
+  publish <session> <pr> [--dry-run]
+                           publish one session's log to a pull request by hand
+  purge                    delete every recorded session
+  redact-check [file]      run text through the redactor and report what matched
+  hook                     record one hook payload from stdin (run by Claude Code)
+`;
+
+const COMMANDS = ['doctor', 'init', 'remove', 'sessions', 'show', 'build', 'publish', 'purge', 'redact-check', 'hook'];
+
+/** The flags each command reads. Anything else is refused, so a typo never runs a command it was meant to modify. */
+const FLAGS: Record<string, string[]> = { init: ['--user'], remove: ['--user'], sessions: ['--all'], publish: ['--dry-run'] };
+
+/**
+ * Commands used to ignore flags they did not know, so `pdl remove --help` ran
+ * the removal and `pdl purge --dry-run` deleted everything. Help and unknown
+ * flags are settled here, before any command can act.
+ */
+function preflight(): boolean {
+  const args = process.argv.slice(3);
+  const help = (a: string | undefined) => a === '--help' || a === '-h';
+  if (command === 'help' || help(command) || (command !== undefined && COMMANDS.includes(command) && args.some(help))) {
+    process.stdout.write(USAGE);
+    return false;
+  }
+  if (command === undefined || !COMMANDS.includes(command)) return true; // The switch reports it.
+  const unknown = args.find((a) => a.startsWith('-') && !(FLAGS[command] ?? []).includes(a));
+  if (unknown) {
+    process.stderr.write(`pdl ${command}: unknown option ${unknown}\n\n${USAGE}`);
+    process.exitCode = 2;
+    return false;
+  }
+  return true;
+}
+
+if (preflight()) switch (command) {
   case 'hook':
     await hook(store);
     break;
@@ -384,6 +426,6 @@ switch (command) {
     await redactCheck(arg);
     break;
   default:
-    process.stderr.write('usage: pdl <doctor|init|remove|sessions|show|build|publish|purge|redact-check|hook>\n');
+    process.stderr.write(USAGE);
     process.exitCode = 2;
 }

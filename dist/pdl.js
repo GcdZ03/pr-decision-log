@@ -1896,7 +1896,41 @@ var storeRoot = process.env["PDL_HOME"] ?? config.store.dir;
 var store = new EventStore(storeRoot);
 var publishState = new FilePublishState(join5(storeRoot, "publish-state.json"));
 var [command, arg] = process.argv.slice(2);
-switch (command) {
+var USAGE = `usage: pdl <command>
+
+  doctor                   check the install, with a remedy for each problem
+  init [--user]            register hooks in this repo's .claude/settings.json, or ~/.claude/settings.json
+  remove [--user]          take pdl's hooks back out of that settings file
+  sessions [--all]         list recorded sessions for this repository, newest first
+  show [session]           print the recorded timeline and flags: the branch's, or one session's
+  build [session]          print the log without publishing: the branch's, or one session's
+  publish <session> <pr> [--dry-run]
+                           publish one session's log to a pull request by hand
+  purge                    delete every recorded session
+  redact-check [file]      run text through the redactor and report what matched
+  hook                     record one hook payload from stdin (run by Claude Code)
+`;
+var COMMANDS = ["doctor", "init", "remove", "sessions", "show", "build", "publish", "purge", "redact-check", "hook"];
+var FLAGS = { init: ["--user"], remove: ["--user"], sessions: ["--all"], publish: ["--dry-run"] };
+function preflight() {
+  const args = process.argv.slice(3);
+  const help = (a) => a === "--help" || a === "-h";
+  if (command === "help" || help(command) || command !== void 0 && COMMANDS.includes(command) && args.some(help)) {
+    process.stdout.write(USAGE);
+    return false;
+  }
+  if (command === void 0 || !COMMANDS.includes(command)) return true;
+  const unknown = args.find((a) => a.startsWith("-") && !(FLAGS[command] ?? []).includes(a));
+  if (unknown) {
+    process.stderr.write(`pdl ${command}: unknown option ${unknown}
+
+${USAGE}`);
+    process.exitCode = 2;
+    return false;
+  }
+  return true;
+}
+if (preflight()) switch (command) {
   case "hook":
     await hook(store);
     break;
@@ -1928,6 +1962,6 @@ switch (command) {
     await redactCheck(arg);
     break;
   default:
-    process.stderr.write("usage: pdl <doctor|init|remove|sessions|show|build|publish|purge|redact-check|hook>\n");
+    process.stderr.write(USAGE);
     process.exitCode = 2;
 }

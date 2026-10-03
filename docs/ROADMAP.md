@@ -37,7 +37,8 @@ Core:
 
 Quality:
 - [x] `node:test` suite: redactor, renderer, splice, classifier, store, publisher; fixtures from real sessions. Extractor still missing, since the extractor itself is not built.
-- [ ] Integration test that runs `pdl hook` against 9 recorded payloads and asserts the store contents.
+- [x] Integration test that runs `pdl hook` against 9 recorded payloads and asserts the store contents.
+  - `test/hook-integration.test.ts`: one real payload per event (8 captured from a headless session on 3 Oct 2026, the failed Bash call from Phase 0), each run as its own `pdl hook` process with `gh` stubbed. Only the two settled tool calls become events, only `Stop` records a turn and asks `gh` once, and `PDL_DISABLE` records and calls nothing.
 - [x] CI on GitHub Actions: typecheck, test, bundle, and a "dogfood" job that runs `pdl build` on a fixture and diffs against a golden markdown.
 - [x] README: install, 60-second demo, what is and is not published, known gaps (thinking not available; regex redaction limits).
 
