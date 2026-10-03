@@ -2,6 +2,8 @@ import { classifyCommand, type CommandKind } from './classify-command.ts';
 import type { TimelineEvent } from './types.ts';
 import { countAssertions } from '../flags/assertions.ts';
 import { exitStatusMaskable, outputShowsFailure } from './runner-output.ts';
+import { commandDir } from './location.ts';
+import { dirname, isAbsolute } from 'node:path';
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
 const WRITE_TOOLS = new Set(['Write']);
@@ -39,16 +41,20 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
   const durationMs = typeof payload['duration_ms'] === 'number' ? (payload['duration_ms'] as number) : undefined;
 
   if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') return null;
+  const cwd = str(payload['cwd']);
 
   if (tool === 'Bash') {
     const command = str(input['command']) ?? '';
     const classification: CommandKind = classifyCommand(command);
+    // Where it ran, for attributing it to a repository and branch at the end
+    // of the turn; see events/location.ts.
+    const dir = cwd ? { dir: commandDir(command, cwd) } : {};
 
     if (event === 'PostToolUseFailure') {
       const error = str(payload['error']) ?? '';
       return {
         kind: 'command', id, at: recordedAt, command, classification,
-        outcome: 'fail', output: error, exitCode: parseExitCode(error), durationMs,
+        outcome: 'fail', output: error, exitCode: parseExitCode(error), durationMs, ...dir,
       };
     }
 
@@ -69,25 +75,27 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
       outcome: interrupted ? 'interrupted' : masked ? 'fail' : 'pass',
       output,
       durationMs,
+      ...dir,
     };
   }
 
   if (EDIT_TOOLS.has(tool ?? '') || WRITE_TOOLS.has(tool ?? '')) {
     const path = str(input['file_path']) ?? str(input['notebook_path']) ?? '';
     if (!path) return null;
+    const dir = isAbsolute(path) ? { dir: dirname(path) } : {};
 
     // A Write replaces the whole file, so there is no "before" to count.
     // Reporting 0 would make every Write look like an assertion removal.
     if (WRITE_TOOLS.has(tool ?? '')) {
-      return { kind: 'edit', id, at: recordedAt, path };
+      return { kind: 'edit', id, at: recordedAt, path, ...dir };
     }
     const before = input['old_string'];
     const after = input['new_string'];
     if (typeof before !== 'string' || typeof after !== 'string') {
-      return { kind: 'edit', id, at: recordedAt, path };
+      return { kind: 'edit', id, at: recordedAt, path, ...dir };
     }
     return {
-      kind: 'edit', id, at: recordedAt, path,
+      kind: 'edit', id, at: recordedAt, path, ...dir,
       assertionsBefore: countAssertions(before),
       assertionsAfter: countAssertions(after),
     };

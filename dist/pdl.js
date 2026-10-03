@@ -230,7 +230,42 @@ function exitStatusMaskable(command2) {
   return /[|;]/.test(command2);
 }
 
+// src/events/location.ts
+import { homedir as homedir2 } from "node:os";
+import { resolve } from "node:path";
+var ASSIGNMENT_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
+var PATH_ARG = String.raw`("[^"$\`]*"|'[^']*'|[^\s;&|()"'\`$]+|\$HOME[^\s;&|()]*|\$\{HOME\}[^\s;&|()]*)`;
+var CD_RE = new RegExp(String.raw`^(?:cd|pushd)\s+${PATH_ARG}\s*$`);
+var GIT_C_RE = new RegExp(String.raw`^git\s+-C\s+${PATH_ARG}\s`);
+function unquote(arg2, home) {
+  if (arg2.startsWith('"') && arg2.endsWith('"') || arg2.startsWith("'") && arg2.endsWith("'")) arg2 = arg2.slice(1, -1);
+  if (arg2 === "~" || arg2.startsWith("~/")) return home + arg2.slice(1);
+  return arg2.replace(/^\$\{?HOME\}?/, home);
+}
+function commandDir(command2, cwd, home = homedir2()) {
+  const firstLine = command2.split("\n")[0] ?? "";
+  let dir = cwd;
+  for (let segment of firstLine.split(/&&|\|\||;/)) {
+    segment = segment.trim().replace(/^\(+\s*/, "").replace(/\s*\)+$/, "");
+    if (!segment) continue;
+    if (/^(?:export|set)\s/.test(segment)) continue;
+    segment = segment.replace(ASSIGNMENT_RE, "");
+    const cd = CD_RE.exec(segment);
+    if (cd?.[1]) {
+      if (cd[1] === "-") return cwd;
+      dir = resolve(dir, unquote(cd[1], home));
+      continue;
+    }
+    if (/^(?:cd|pushd)\b/.test(segment)) return cwd;
+    const gitC = GIT_C_RE.exec(`${segment} `);
+    if (gitC?.[1]) return resolve(dir, unquote(gitC[1], home));
+    break;
+  }
+  return dir;
+}
+
 // src/events/normalize.ts
+import { dirname, isAbsolute } from "node:path";
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 var WRITE_TOOLS = /* @__PURE__ */ new Set(["Write"]);
 function parseExitCode(error) {
@@ -247,9 +282,11 @@ function normalize(payload, recordedAt) {
   const input = obj(payload["tool_input"]) ?? {};
   const durationMs = typeof payload["duration_ms"] === "number" ? payload["duration_ms"] : void 0;
   if (event !== "PostToolUse" && event !== "PostToolUseFailure") return null;
+  const cwd = str(payload["cwd"]);
   if (tool === "Bash") {
     const command2 = str(input["command"]) ?? "";
     const classification = classifyCommand(command2);
+    const dir = cwd ? { dir: commandDir(command2, cwd) } : {};
     if (event === "PostToolUseFailure") {
       const error = str(payload["error"]) ?? "";
       return {
@@ -261,7 +298,8 @@ function normalize(payload, recordedAt) {
         outcome: "fail",
         output: error,
         exitCode: parseExitCode(error),
-        durationMs
+        durationMs,
+        ...dir
       };
     }
     const response = obj(payload["tool_response"]) ?? {};
@@ -278,25 +316,28 @@ function normalize(payload, recordedAt) {
       classification,
       outcome: interrupted ? "interrupted" : masked ? "fail" : "pass",
       output,
-      durationMs
+      durationMs,
+      ...dir
     };
   }
   if (EDIT_TOOLS.has(tool ?? "") || WRITE_TOOLS.has(tool ?? "")) {
     const path = str(input["file_path"]) ?? str(input["notebook_path"]) ?? "";
     if (!path) return null;
+    const dir = isAbsolute(path) ? { dir: dirname(path) } : {};
     if (WRITE_TOOLS.has(tool ?? "")) {
-      return { kind: "edit", id, at: recordedAt, path };
+      return { kind: "edit", id, at: recordedAt, path, ...dir };
     }
     const before = input["old_string"];
     const after = input["new_string"];
     if (typeof before !== "string" || typeof after !== "string") {
-      return { kind: "edit", id, at: recordedAt, path };
+      return { kind: "edit", id, at: recordedAt, path, ...dir };
     }
     return {
       kind: "edit",
       id,
       at: recordedAt,
       path,
+      ...dir,
       assertionsBefore: countAssertions(before),
       assertionsAfter: countAssertions(after)
     };
@@ -449,15 +490,15 @@ function redact(input, extra = []) {
 }
 
 // src/render/relativize.ts
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { basename, isAbsolute as isAbsolute2, relative, resolve as resolve2 } from "node:path";
 function relativize(path, repoRoot2) {
   if (!path) return path;
-  if (!isAbsolute(path)) return path;
-  const root = resolve(repoRoot2);
+  if (!isAbsolute2(path)) return path;
+  const root = resolve2(repoRoot2);
   const candidates = [root, root.replace(/^\/private\//, "/"), `/private${root}`];
   for (const base of candidates) {
     const rel = relative(base, path);
-    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return rel;
+    if (rel && !rel.startsWith("..") && !isAbsolute2(rel)) return rel;
   }
   return basename(path);
 }
@@ -826,8 +867,9 @@ ${MARKER_END}`);
 }
 
 // src/publish/publish.ts
-var realGh = (args, stdin) => {
-  const proc = spawnSync("gh", args, { input: stdin, encoding: "utf8" });
+var realGh = (args, stdin) => ghIn(void 0)(args, stdin);
+var ghIn = (cwd) => (args, stdin) => {
+  const proc = spawnSync("gh", args, { input: stdin, encoding: "utf8", ...cwd ? { cwd } : {} });
   return {
     ok: proc.status === 0,
     stdout: proc.stdout ?? "",
@@ -860,7 +902,7 @@ async function publish(options) {
 
 // src/publish/auto-publish.ts
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname as dirname2 } from "node:path";
 
 // src/publish/publish-comment.ts
 var MARKER_START2 = "<!-- pdl:start";
@@ -913,7 +955,7 @@ var FilePublishState = class {
     const all = this.#all();
     all[key] = value;
     try {
-      mkdirSync2(dirname(this.path), { recursive: true, mode: 448 });
+      mkdirSync2(dirname2(this.path), { recursive: true, mode: 448 });
       writeFileSync2(this.path, JSON.stringify(all));
     } catch {
     }
@@ -1003,23 +1045,52 @@ function defaultBase(cwd = process.cwd()) {
 }
 
 // src/events/branch.ts
-function selectForBranch(items, turns, branch) {
+var samePlace = (a, b) => a.repo === b.repo && a.branch === b.branch;
+function ownerTurn(item, turns) {
   const last = turns[turns.length - 1];
-  if (!last) return [];
+  if (item.at === void 0) return last;
+  return turns.find((t) => t.at >= item.at) ?? last;
+}
+function placeOf(item, turns) {
+  const owner = ownerTurn(item, turns);
+  if (!owner) return void 0;
+  return (item.dir !== void 0 ? owner.places?.[item.dir] : void 0) ?? { repo: owner.repo, branch: owner.branch };
+}
+function selectForBranch(items, turns, target) {
   return items.filter((item) => {
-    const owner = item.at === void 0 ? last : turns.find((t) => t.at >= item.at) ?? last;
-    return owner.branch === branch;
+    const place = placeOf(item, turns);
+    return place !== void 0 && samePlace(place, target);
   });
 }
 function sessionsForBranch(turns, repo, branch) {
+  const target = { repo, branch };
   const out = [];
   for (const t of turns) {
-    if (t.repo === repo && t.branch === branch && !out.includes(t.session)) out.push(t.session);
+    const here = samePlace(t, target) || Object.values(t.places ?? {}).some((p) => samePlace(p, target));
+    if (here && !out.includes(t.session)) out.push(t.session);
   }
   return out;
 }
+function planTurn(events, home, resolve4) {
+  const resolved = /* @__PURE__ */ new Map();
+  for (const e of events) {
+    if (e.dir === void 0 || resolved.has(e.dir)) continue;
+    const p = resolve4(e.dir);
+    if (p && !samePlace(p, home)) resolved.set(e.dir, p);
+  }
+  const touched = [];
+  for (const e of events) {
+    const p = (e.dir !== void 0 ? resolved.get(e.dir) : void 0) ?? home;
+    if (!touched.some((t) => samePlace(t, p))) touched.push(p);
+  }
+  const primary = touched.length === 1 && touched[0] ? touched[0] : home;
+  const places = {};
+  for (const [dir, p] of resolved) if (!samePlace(p, primary)) places[dir] = p;
+  const publishable = (touched.length === 0 ? [home] : touched).filter((p) => p.branch !== "");
+  return { primary, places, touched: publishable };
+}
 function eventsForBranch(store2, repo, branch) {
-  const all = store2.turns().filter((t) => t.repo === repo);
+  const all = store2.turns();
   const sessions2 = sessionsForBranch(all, repo, branch);
   const events = [];
   const transcripts = /* @__PURE__ */ new Map();
@@ -1029,7 +1100,7 @@ function eventsForBranch(store2, repo, branch) {
     turnsBySession.set(session, turns);
     const transcript = [...turns].reverse().find((t) => t.transcript)?.transcript;
     if (transcript) transcripts.set(session, transcript);
-    events.push(...selectForBranch(store2.read(session), turns, branch));
+    events.push(...selectForBranch(store2.read(session), turns, { repo, branch }));
   }
   events.sort((a, b) => a.at.localeCompare(b.at));
   return { events, sessions: sessions2, transcripts, turnsBySession };
@@ -1037,10 +1108,12 @@ function eventsForBranch(store2, repo, branch) {
 function summariseSessions(infos, turns, repo) {
   return infos.map((i) => {
     const own = turns.filter((t) => t.session === i.id);
+    const places = own.flatMap((t) => [t, ...Object.values(t.places ?? {})]);
     const branches = [];
-    for (const t of own) if (!branches.includes(t.branch)) branches.push(t.branch);
-    return { id: i.id, repo: own[own.length - 1]?.repo, branches, lastActivityMs: i.mtimeMs, events: i.events };
-  }).filter((s) => repo === void 0 || s.repo === repo).sort((a, b) => b.lastActivityMs - a.lastActivityMs);
+    for (const p of places) if (p.branch && !branches.includes(p.branch)) branches.push(p.branch);
+    const repos = new Set(places.map((p) => p.repo));
+    return { id: i.id, repo: own[own.length - 1]?.repo, repos, branches, lastActivityMs: i.mtimeMs, events: i.events };
+  }).filter((s) => repo === void 0 || s.repos.has(repo)).map(({ repos: _repos, ...s }) => s).sort((a, b) => b.lastActivityMs - a.lastActivityMs);
 }
 
 // src/publish/detect-pr.ts
@@ -1359,8 +1432,8 @@ function extractDecisions(entries, options = {}) {
 // src/extract/find-transcript.ts
 import { readdirSync as readdirSync2, existsSync } from "node:fs";
 import { join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
-var DEFAULT_ROOT = join2(homedir2(), ".claude", "projects");
+import { homedir as homedir3 } from "node:os";
+var DEFAULT_ROOT = join2(homedir3(), ".claude", "projects");
 function findTranscript(sessionId, root = DEFAULT_ROOT) {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(sessionId) || sessionId.startsWith(".")) return void 0;
   let dirs;
@@ -1428,11 +1501,11 @@ function removeHooks(settings) {
 
 // src/doctor/settings.ts
 import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, realpathSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join3, resolve as resolve2 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { dirname as dirname3, join as join3, resolve as resolve3 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 import { spawnSync as spawnSync3 } from "node:child_process";
 function settingsPathFor(scope, repoRoot2) {
-  return scope === "user" ? join3(homedir3(), ".claude", "settings.json") : join3(repoRoot2, ".claude", "settings.json");
+  return scope === "user" ? join3(homedir4(), ".claude", "settings.json") : join3(repoRoot2, ".claude", "settings.json");
 }
 function readSettings(path) {
   try {
@@ -1450,13 +1523,13 @@ function settingsExist(path) {
   }
 }
 function writeSettings(path, settings) {
-  mkdirSync3(dirname2(path), { recursive: true });
+  mkdirSync3(dirname3(path), { recursive: true });
   writeFileSync3(path, `${JSON.stringify(settings, null, 2)}
 `);
 }
 function hookCommand(entry = process.argv[1] ?? "pdl", scope = "project", root = repoRoot()) {
-  const abs = resolve2(entry);
-  const prefix = `${resolve2(root)}/`;
+  const abs = resolve3(entry);
+  const prefix = `${resolve3(root)}/`;
   const path = scope === "project" && abs.startsWith(prefix) ? `$CLAUDE_PROJECT_DIR/${abs.slice(prefix.length)}` : abs;
   return `node "${path}" hook`;
 }
@@ -1469,7 +1542,7 @@ function repoRoot() {
   const p = spawnSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
   return p.status === 0 ? (p.stdout ?? "").trim() : process.cwd();
 }
-function trustState(root, statePath = join3(homedir3(), ".claude.json")) {
+function trustState(root, statePath = join3(homedir4(), ".claude.json")) {
   let projects;
   try {
     projects = JSON.parse(readFileSync4(statePath, "utf8")).projects;
@@ -1477,7 +1550,7 @@ function trustState(root, statePath = join3(homedir3(), ".claude.json")) {
     return "unreadable";
   }
   if (typeof projects !== "object" || projects === null) return "unknown-folder";
-  const entry = projects[resolve2(root)];
+  const entry = projects[resolve3(root)];
   if (!entry) return "unknown-folder";
   return entry.hasTrustDialogAccepted === true ? "accepted" : "not-accepted";
 }
@@ -1494,10 +1567,10 @@ var real = (p) => {
   try {
     return realpathSync(p);
   } catch {
-    return resolve2(p);
+    return resolve3(p);
   }
 };
-function pluginHooks(root, installedPath = join3(homedir3(), ".claude", "plugins", "installed_plugins.json"), userSettingsPath = join3(homedir3(), ".claude", "settings.json")) {
+function pluginHooks(root, installedPath = join3(homedir4(), ".claude", "plugins", "installed_plugins.json"), userSettingsPath = join3(homedir4(), ".claude", "settings.json")) {
   const plugins = readJson(installedPath)["plugins"];
   if (typeof plugins !== "object" || plugins === null) return { active: false, events: [] };
   const settings = [
@@ -1521,13 +1594,13 @@ function pluginHooks(root, installedPath = join3(homedir3(), ".claude", "plugins
 // src/config/config.ts
 import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 var DEFAULT_CONFIG = {
   publish: { mode: "body", max_chars: 12e3, on_pr_create: true },
   extract: { decision_markers: [] },
   tests: { flag_edit_after_failure: true },
   redaction: { extra_patterns: [] },
-  store: { dir: join4(homedir4(), ".local", "share", "pdl"), retention_days: 30 },
+  store: { dir: join4(homedir5(), ".local", "share", "pdl"), retention_days: 30 },
   problems: []
 };
 var PUBLISH_MODES = ["body", "comment"];
@@ -1552,7 +1625,7 @@ function readJson2(path, problems) {
   }
 }
 function expandHome(p) {
-  return p.startsWith("~/") ? join4(homedir4(), p.slice(2)) : p;
+  return p.startsWith("~/") ? join4(homedir5(), p.slice(2)) : p;
 }
 function applySection(name, base, raw, problems) {
   if (raw === void 0) return base;
@@ -1614,7 +1687,7 @@ function merge(base, raw, problems) {
   merged.store = { ...merged.store, dir: expandHome(merged.store.dir) };
   return merged;
 }
-function loadConfig(repoRoot2, userDir = join4(homedir4(), ".config", "pdl")) {
+function loadConfig(repoRoot2, userDir = join4(homedir5(), ".config", "pdl")) {
   const problems = [];
   const user = readJson2(join4(userDir, "config.json"), problems);
   const repo = readJson2(join4(repoRoot2, "pdl.config.json"), problems);
@@ -1629,20 +1702,34 @@ process.stdout.on("error", (e) => {
   if (e.code === "EPIPE") process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
   throw e;
 });
-function git2(args) {
-  const p = spawnSync4("git", args, { encoding: "utf8" });
+function git2(args, cwd) {
+  const p = spawnSync4("git", args, { encoding: "utf8", ...cwd ? { cwd } : {} });
   return p.status === 0 ? (p.stdout ?? "").trim() : "";
 }
-function currentBranch() {
-  return git2(["symbolic-ref", "--short", "-q", "HEAD"]);
+function currentBranch(cwd) {
+  return git2(["symbolic-ref", "--short", "-q", "HEAD"], cwd);
 }
-function logMeta(branch, base) {
+function placeIn(dir) {
+  const repo = git2(["rev-parse", "--show-toplevel"], dir);
+  return repo ? { repo, branch: currentBranch(dir) } : void 0;
+}
+function placeResolver() {
+  const found = [];
+  return (dir) => {
+    const known = found.find((p2) => dir === p2.repo || dir.startsWith(`${p2.repo}/`));
+    if (known) return known;
+    const p = placeIn(dir);
+    if (p) found.push(p);
+    return p;
+  };
+}
+function logMeta(place, base) {
   return {
-    repo: git2(["remote", "get-url", "origin"]) || "unknown",
-    branch: branch || "detached",
-    headSha: git2(["rev-parse", "--short", "HEAD"]),
-    repoRoot: repoRoot(),
-    diff: diffAgainst(base),
+    repo: git2(["remote", "get-url", "origin"], place.repo) || "unknown",
+    branch: place.branch || "detached",
+    headSha: git2(["rev-parse", "--short", "HEAD"], place.repo),
+    repoRoot: place.repo,
+    diff: diffAgainst(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns)
   };
@@ -1651,17 +1738,17 @@ function decisionsIn(transcript) {
   return transcript ? extractDecisions(readTranscript(transcript), { extraMarkers: config.extract.decision_markers }) : [];
 }
 function renderSession(store2, sessionId) {
-  const log = buildLog(store2.read(sessionId), logMeta(currentBranch(), defaultBase()), decisionsIn(findTranscript(sessionId)));
+  const log = buildLog(store2.read(sessionId), logMeta({ repo: repoRoot(), branch: currentBranch() }, defaultBase()), decisionsIn(findTranscript(sessionId)));
   return render(log, { maxChars: config.publish.max_chars });
 }
-function renderBranch(store2, root, branch, base) {
-  const merged = eventsForBranch(store2, root, branch);
+function renderBranch(store2, place, base) {
+  const merged = eventsForBranch(store2, place.repo, place.branch);
   const seen = /* @__PURE__ */ new Set();
   const decisions = merged.sessions.flatMap(
     (session) => selectForBranch(
       decisionsIn(merged.transcripts.get(session) ?? findTranscript(session)),
       merged.turnsBySession.get(session) ?? [],
-      branch
+      place
     )
   ).filter((d) => {
     const key = `${d.kind}|${d.text}`;
@@ -1669,7 +1756,7 @@ function renderBranch(store2, root, branch, base) {
     seen.add(key);
     return true;
   });
-  const log = buildLog(merged.events, { ...logMeta(branch, base), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 function build(store2, sessionId) {
@@ -1683,7 +1770,7 @@ function build(store2, sessionId) {
     process.exitCode = 2;
     return;
   }
-  process.stdout.write(renderBranch(store2, repoRoot(), branch, defaultBase()));
+  process.stdout.write(renderBranch(store2, { repo: repoRoot(), branch }, defaultBase()));
 }
 async function publishCmd(store2, sessionId, prNumber, dryRun) {
   if (!sessionId || !prNumber) {
@@ -1700,14 +1787,14 @@ async function publishCmd(store2, sessionId, prNumber, dryRun) {
 `);
 }
 function readStdin() {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     let buf = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => {
       buf += c;
     });
-    process.stdin.on("end", () => resolve3(buf));
-    process.stdin.on("error", () => resolve3(""));
+    process.stdin.on("end", () => resolve4(buf));
+    process.stdin.on("error", () => resolve4(""));
   });
 }
 async function hook(store2) {
@@ -1720,20 +1807,33 @@ async function hook(store2) {
     const created = config.publish.on_pr_create && event ? detectPrCreation(event) !== null : false;
     const stopped = payload["hook_event_name"] === "Stop";
     if (!sessionId || !(created || stopped)) return;
-    const branch = currentBranch();
-    if (!branch) return;
-    const root = repoRoot();
+    const home = { repo: repoRoot(), branch: currentBranch() };
+    const turns = store2.turns().filter((t) => t.session === sessionId);
+    const since = turns[turns.length - 1]?.at ?? "";
+    const plan = planTurn(store2.read(sessionId).filter((e) => e.at > since), home, placeResolver());
     const transcript = typeof payload["transcript_path"] === "string" ? payload["transcript_path"] : void 0;
-    store2.appendTurn({ session: sessionId, repo: root, branch, at: (/* @__PURE__ */ new Date()).toISOString(), ...transcript ? { transcript } : {} });
+    const turn = {
+      session: sessionId,
+      ...plan.primary,
+      at: (/* @__PURE__ */ new Date()).toISOString(),
+      ...transcript ? { transcript } : {},
+      ...Object.keys(plan.places).length > 0 ? { places: plan.places } : {}
+    };
+    store2.appendTurn(turn);
     if (stopped) store2.pruneIfDue(config.store.retention_days, Date.now());
-    await autoPublish({
-      key: `${root}#${branch}`,
-      created,
-      mode: config.publish.mode,
-      defaultBase: defaultBase(),
-      state: publishState,
-      build: (base) => renderBranch(store2, root, branch, base)
-    });
+    const createdAt = created && event ? placeOf(event, [turn]) : void 0;
+    const targets = createdAt ? [createdAt].filter((p) => p.branch !== "") : plan.touched;
+    for (const place of targets) {
+      await autoPublish({
+        key: `${place.repo}#${place.branch}`,
+        created,
+        mode: config.publish.mode,
+        defaultBase: defaultBase(place.repo),
+        state: publishState,
+        gh: ghIn(place.repo),
+        build: (base) => renderBranch(store2, place, base)
+      });
+    }
   } catch {
   }
 }

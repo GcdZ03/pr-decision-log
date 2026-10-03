@@ -6,8 +6,9 @@ import { buildLog } from './render/build-log.ts';
 import { render } from './render/render.ts';
 import { publish } from './publish/publish.ts';
 import { autoPublish, FilePublishState } from './publish/auto-publish.ts';
+import { ghIn } from './publish/publish.ts';
 import { defaultBase, diffAgainst } from './publish/pr-diff.ts';
-import { eventsForBranch, selectForBranch, summariseSessions } from './events/branch.ts';
+import { eventsForBranch, placeOf, planTurn, selectForBranch, summariseSessions, type Place } from './events/branch.ts';
 import type { TimelineEvent } from './events/types.ts';
 import { isDisabled } from './events/handle-hook.ts';
 import { detectPrCreation } from './publish/detect-pr.ts';
@@ -37,8 +38,8 @@ process.stdout.on('error', (e: NodeJS.ErrnoException) => {
   throw e;
 });
 
-function git(args: string[]): string {
-  const p = spawnSync('git', args, { encoding: 'utf8' });
+function git(args: string[], cwd?: string): string {
+  const p = spawnSync('git', args, { encoding: 'utf8', ...(cwd ? { cwd } : {}) });
   return p.status === 0 ? (p.stdout ?? '').trim() : '';
 }
 
@@ -48,17 +49,44 @@ function git(args: string[]): string {
  * yet and made a new repo's first session look detached, so its turns were
  * never recorded.
  */
-function currentBranch(): string {
-  return git(['symbolic-ref', '--short', '-q', 'HEAD']);
+function currentBranch(cwd?: string): string {
+  return git(['symbolic-ref', '--short', '-q', 'HEAD'], cwd);
 }
 
-function logMeta(branch: string, base: string) {
+/**
+ * The working tree and branch a directory belongs to, or undefined outside
+ * any repository (or for a directory that no longer exists). Run once per
+ * distinct directory per turn, from the Stop hook, never per event.
+ */
+function placeIn(dir: string): Place | undefined {
+  const repo = git(['rev-parse', '--show-toplevel'], dir);
+  return repo ? { repo, branch: currentBranch(dir) } : undefined;
+}
+
+/**
+ * `placeIn` for one turn, reusing a working tree already found for any
+ * directory inside it: a subagent editing ten folders of one worktree costs
+ * two git calls, not twenty. A nested repository or submodule inside a found
+ * tree would be missed; neither is common enough to pay for on every turn.
+ */
+function placeResolver(): (dir: string) => Place | undefined {
+  const found: Place[] = [];
+  return (dir) => {
+    const known = found.find((p) => dir === p.repo || dir.startsWith(`${p.repo}/`));
+    if (known) return known;
+    const p = placeIn(dir);
+    if (p) found.push(p);
+    return p;
+  };
+}
+
+function logMeta(place: Place, base: string) {
   return {
-    repo: git(['remote', 'get-url', 'origin']) || 'unknown',
-    branch: branch || 'detached',
-    headSha: git(['rev-parse', '--short', 'HEAD']),
-    repoRoot: repoRoot(),
-    diff: diffAgainst(base),
+    repo: git(['remote', 'get-url', 'origin'], place.repo) || 'unknown',
+    branch: place.branch || 'detached',
+    headSha: git(['rev-parse', '--short', 'HEAD'], place.repo),
+    repoRoot: place.repo,
+    diff: diffAgainst(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
   };
@@ -70,7 +98,7 @@ function decisionsIn(transcript: string | undefined): Decision[] {
 
 /** One session's log, for `pdl build <session>` and `pdl publish`. */
 function renderSession(store: EventStore, sessionId: string): string {
-  const log = buildLog(store.read(sessionId), logMeta(currentBranch(), defaultBase()), decisionsIn(findTranscript(sessionId)));
+  const log = buildLog(store.read(sessionId), logMeta({ repo: repoRoot(), branch: currentBranch() }, defaultBase()), decisionsIn(findTranscript(sessionId)));
   return render(log, { maxChars: config.publish.max_chars });
 }
 
@@ -78,15 +106,15 @@ function renderSession(store: EventStore, sessionId: string): string {
  * The branch's log: every session that worked on it, merged in time order, so
  * one PR carries one log however many sessions it took.
  */
-function renderBranch(store: EventStore, root: string, branch: string, base: string): string {
-  const merged = eventsForBranch(store, root, branch);
+function renderBranch(store: EventStore, place: Place, base: string): string {
+  const merged = eventsForBranch(store, place.repo, place.branch);
 
   const seen = new Set<string>();
   const decisions = merged.sessions.flatMap((session) =>
     selectForBranch(
       decisionsIn(merged.transcripts.get(session) ?? findTranscript(session)),
       merged.turnsBySession.get(session) ?? [],
-      branch,
+      place,
     ),
   ).filter((d) => {
     const key = `${d.kind}|${d.text}`;
@@ -95,7 +123,7 @@ function renderBranch(store: EventStore, root: string, branch: string, base: str
     return true;
   });
 
-  const log = buildLog(merged.events, { ...logMeta(branch, base), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 
@@ -110,7 +138,7 @@ function build(store: EventStore, sessionId: string | undefined): void {
     process.exitCode = 2;
     return;
   }
-  process.stdout.write(renderBranch(store, repoRoot(), branch, defaultBase()));
+  process.stdout.write(renderBranch(store, { repo: repoRoot(), branch }, defaultBase()));
 }
 
 async function publishCmd(store: EventStore, sessionId: string | undefined, prNumber: string | undefined, dryRun: boolean): Promise<void> {
@@ -154,27 +182,43 @@ async function hook(store: EventStore): Promise<void> {
     const stopped = payload['hook_event_name'] === 'Stop';
     if (!sessionId || !(created || stopped)) return;
 
-    const branch = currentBranch();
-    if (!branch) return; // Detached HEAD: there is no PR to publish to.
-    const root = repoRoot();
+    // Where this turn's events happened. The hook runs in the folder the
+    // session was started in, but a session can `cd` into another repository
+    // or drive subagents in worktrees; each event recorded its own directory,
+    // resolved here, once per directory. See events/branch.ts.
+    const home: Place = { repo: repoRoot(), branch: currentBranch() };
+    const turns = store.turns().filter((t) => t.session === sessionId);
+    const since = turns[turns.length - 1]?.at ?? '';
+    const plan = planTurn(store.read(sessionId).filter((e) => e.at > since), home, placeResolver());
 
-    // Marks every event since the last turn as belonging to this branch; see
-    // events/branch.ts for why this is recorded here and not per event.
+    // Marks every event since the last turn with where it happened.
     const transcript = typeof payload['transcript_path'] === 'string' ? payload['transcript_path'] : undefined;
-    store.appendTurn({ session: sessionId, repo: root, branch, at: new Date().toISOString(), ...(transcript ? { transcript } : {}) });
+    const turn = {
+      session: sessionId, ...plan.primary, at: new Date().toISOString(),
+      ...(transcript ? { transcript } : {}),
+      ...(Object.keys(plan.places).length > 0 ? { places: plan.places } : {}),
+    };
+    store.appendTurn(turn);
 
     // Retention runs from the Stop hook because there is no other process;
     // pruneIfDue keeps it to one directory scan a day.
     if (stopped) store.pruneIfDue(config.store.retention_days, Date.now());
 
-    await autoPublish({
-      key: `${root}#${branch}`,
-      created,
-      mode: config.publish.mode,
-      defaultBase: defaultBase(),
-      state: publishState,
-      build: (base) => renderBranch(store, root, branch, base),
-    });
+    // A new PR is published where it was opened; a Stop publishes every
+    // branch the turn worked on.
+    const createdAt = created && event ? placeOf(event, [turn]) : undefined;
+    const targets = createdAt ? [createdAt].filter((p) => p.branch !== '') : plan.touched;
+    for (const place of targets) {
+      await autoPublish({
+        key: `${place.repo}#${place.branch}`,
+        created,
+        mode: config.publish.mode,
+        defaultBase: defaultBase(place.repo),
+        state: publishState,
+        gh: ghIn(place.repo),
+        build: (base) => renderBranch(store, place, base),
+      });
+    }
   } catch {
     // Fail open: a malformed payload must never break the agent loop.
   }

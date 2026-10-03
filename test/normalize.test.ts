@@ -159,3 +159,40 @@ test('a piped non-test command is never reinterpreted from its output', () => {
 
   assert.equal(e?.kind === 'command' ? e.outcome : undefined, 'pass');
 });
+
+test('a command records the directory it ran in, read from a leading cd', () => {
+  const base = { session_id: 's', tool_use_id: 't', tool_name: 'Bash', cwd: '/home/dev/notch' };
+  const moved = asCommand(normalize(payload({
+    ...base, hook_event_name: 'PostToolUse',
+    tool_input: { command: 'cd ../atlas-wt-02 && just test' }, tool_response: { stdout: '3 passed' },
+  }), 'now'));
+  const failed = asCommand(normalize(payload({
+    ...base, hook_event_name: 'PostToolUseFailure',
+    tool_input: { command: 'cd /home/dev/atlas && pytest' }, error: 'Exit code 1',
+  }), 'now'));
+  const stayed = asCommand(normalize(payload({
+    ...base, hook_event_name: 'PostToolUse', tool_input: { command: 'npm test' }, tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.equal(moved.dir, '/home/dev/atlas-wt-02');
+  assert.equal(failed.dir, '/home/dev/atlas');
+  assert.equal(stayed.dir, '/home/dev/notch');
+});
+
+test('an edit records the directory of the file it changed', () => {
+  const e = asEdit(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Edit', cwd: '/home/dev/notch',
+    tool_input: { file_path: '/home/dev/atlas-wt-03/src/db.py', old_string: 'a', new_string: 'b' },
+  }), 'now'));
+
+  assert.equal(e.dir, '/home/dev/atlas-wt-03/src');
+});
+
+test('a command from a payload with no cwd records no directory rather than guessing', () => {
+  const c = asCommand(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Bash',
+    tool_input: { command: 'npm test' }, tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.equal(c.dir, undefined);
+});

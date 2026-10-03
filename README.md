@@ -248,6 +248,8 @@ Publishing is a **post-hoc edit** of the PR body, not a rewrite of `gh pr create
 
 **One log per pull request, however many sessions it took.** Hook payloads carry no branch, so at the end of each turn — where git already runs — pdl records which branch that session was on. Every event is assigned to the turn it happened in, and a branch's log is every event from every session whose turn was on that branch, merged in time order. A `--resume`, a second session the next day, and a session that switched branches part-way all land where they belong.
 
+**Wherever the work happened.** A session started in one repository can `cd` into another, or drive subagents in several worktrees at once, and each of those can end in its own pull request. So each event also records the directory it ran in: the edited file's, or a command's leading `cd` (or `git -C`). At the end of the turn those directories are resolved to their repository and branch, once each, and every branch the turn touched gets its own log, published with `gh` run from that working tree. Measured on a real session that started in one repository and opened six PRs from worktrees of another, 252 of its 278 events land in the other repository; before, none did, and none of the six got a log.
+
 **Stacked PRs are diffed against their own base**, which comes back from GitHub in the same lookup that finds the PR, so a PR built on another feature branch shows only its own changes.
 
 **The end-of-turn cost is network, so pdl spends as little as possible.** Measured, the local work is about 75 ms and each `gh` round-trip about 500 ms. pdl makes no call while a branch is known to have no PR (rechecked every five minutes, or immediately on `gh pr create`), none when the log has not changed since it was last published, and otherwise one lookup plus one write. A turn on a branch with no PR went from 0.7 s to 0.08 s, which is Node's startup time.
@@ -263,6 +265,7 @@ If pdl is registered twice — user and project settings, or plugin and `init` �
 - **The diff rules are shallow regexes**, not parsers. They are tuned against real history for false positives, but that history contains no actual shortcuts, so recall is only evidenced by planted cases and one real agent run.
 - **A PR opened outside the session** (on the web, or from another terminal) is picked up within five minutes, not instantly.
 - **If you delete the log from a PR body by hand**, it comes back the next time the log changes, not on the next turn.
+- **Where a command ran is read from its leading `cd`.** A `cd` buried after another command, or one into `$(...)`, is not followed; that command counts toward the folder the session was started in. A worktree's log is keyed by the worktree's path, so after the worktree is removed, `pdl build` from another checkout of the same branch will not find it.
 - **Claude Code only.** Cursor and Copilot CLI adapters are Phase 3.
 
 ## The problem, with evidence
