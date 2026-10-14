@@ -46,16 +46,18 @@ test('an informational flag is rendered as a note, not as an accusation', () => 
     ].join('\n'),
   }));
 
-  const line = md.split('\n').find((l) => l.includes('EXPECTATION_LOOSENED'));
-  assert.ok(line, 'flag missing from the markdown');
-  assert.match(line, /\(note\)/);
+  const line = md.split('\n').find((l) => l.includes('Expected value changed'));
+  assert.ok(line, 'note missing from the markdown');
+  assert.match(line, /\*\(note\)\*/);
+  assert.ok(md.indexOf(line) > md.indexOf('<details>'), 'a note was shown above the details');
 });
 
 test('a warning is not labelled as a note', () => {
   const md = render(buildLog([ran], { ...meta, diff: diff('src/sum.test.ts', ["+  it.only('adds', () => {"]) }));
 
-  const line = md.split('\n').find((l) => l.includes('TEST_SKIPPED'));
+  const line = md.split('\n').find((l) => l.includes('Test skipped'));
   assert.ok(line && !line.includes('(note)'));
+  assert.ok(md.indexOf(line) < md.indexOf('### Scope'), 'a warning was not under Look here');
 });
 
 test('a diff removal in a file the timeline caught being edited after a failure escalates to a warning', () => {

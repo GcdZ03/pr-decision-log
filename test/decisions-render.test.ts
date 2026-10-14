@@ -26,40 +26,28 @@ test('a secret in a stated decision is redacted before it can be published', () 
   assert.ok(!JSON.stringify(log).includes('AKIAIOSFODNN7EXAMPLE'), 'a secret survived into the log');
 });
 
-test('claims are rendered after the facts', () => {
-  const md = render(buildLog([cmd], meta, [dec({})]));
-
-  assert.ok(md.indexOf('### Decisions') > md.indexOf('### Verification'), 'decisions came before the evidence');
-});
-
-test('a human-confirmed decision is labelled differently from a stated one', () => {
+test('confirmed decisions are visible, and stated claims are inside the details', () => {
   const md = render(buildLog([cmd], meta, [
     dec({ text: 'Base: main', source: 'human-answer', confidence: 'confirmed_by_human' }),
+    dec({}),
   ]));
 
-  assert.match(md, /confirmed by (?:a )?human/i);
+  assert.match(md, /### Decisions you confirmed\n- Base: main\n/);
+  assert.ok(md.indexOf('#### Stated by the agent') > md.indexOf('<details>'), 'stated claims escaped the details');
+  assert.match(md, /- Retry at the job level because the client is shared\. \*\(stated\)\*/);
 });
 
-test('assumptions render under their own heading', () => {
-  const md = render(buildLog([cmd], meta, [dec({ kind: 'assumption', text: 'Assuming one session per PR.' })]));
+test('assumptions and open items are labelled inside the stated claims', () => {
+  const md = render(buildLog([cmd], meta, [dec({ kind: 'assumption', text: 'Assuming one session per PR.' }), dec({ kind: 'open_item', text: 'TODO: comment mode.' })]));
 
-  assert.match(md, /### Assumptions/);
-  assert.ok(!md.includes('### Decisions'), 'an assumption leaked into Decisions');
+  assert.match(md, /- Assumption: Assuming one session per PR\. \*\(stated\)\*/);
+  assert.match(md, /- Open item: TODO: comment mode\. \*\(stated\)\*/);
 });
 
-test('open items render under their own heading', () => {
-  const md = render(buildLog([cmd], meta, [dec({ kind: 'open_item', text: 'TODO: comment mode.' })]));
-
-  assert.match(md, /### Open items/);
-});
-
-test('no decisions means no heading at all, which is the common case', () => {
+test('no decisions means no decision headings at all, which is the common case', () => {
   const md = render(buildLog([cmd], meta, []));
 
-  assert.ok(!md.includes('### Decisions'));
-  assert.ok(!md.includes('### Assumptions'));
-  assert.ok(!md.includes('### Open items'));
-  assert.ok(!md.toLowerCase().includes('none recorded'));
+  assert.doesNotMatch(md, /Decisions you confirmed|Stated by the agent|none recorded/i);
 });
 
 test('omitting decisions entirely still builds, so existing callers keep working', () => {

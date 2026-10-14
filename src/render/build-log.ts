@@ -3,11 +3,16 @@ import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
 import { redact, type RedactionRule } from './redact.ts';
-import { insideRepo, relativize } from './relativize.ts';
+import { basename, isAbsolute } from 'node:path';
+import { insideRepo, relativize, scrubPaths } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
 import { classifyCommand } from '../events/classify-command.ts';
 import { expandWrites } from '../events/expand-writes.ts';
+import { summariseChecks, type Check } from '../review/checks.ts';
+import { neverRun, type NeverRun } from '../review/never-run.ts';
+import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
+import { summariseScope, type Scope } from '../review/scope.ts';
 import { analyzeDiff, changedFiles, type FileStatus } from '../flags/diff-signals.ts';
 
 export type Verification = {
@@ -40,6 +45,14 @@ export type DecisionLog = {
   otherCommands: number;
   changes: Change[];
   flags: Flag[];
+  /** One entry per distinct test, build or lint fragment; `verification` keeps every run. */
+  checks: Check[];
+  neverRun: NeverRun[];
+  risky: RiskyGroup[];
+  /** Absent when there is no diff to measure. */
+  scope?: Scope;
+  /** In-repo files written in the session that the diff lacks and git does not ignore. */
+  strayWrites: string[];
   /** Claims, kept in one list with a `kind` and split at render time. */
   decisions: Decision[];
   redaction: { hits: number; rules: string[] };
@@ -61,6 +74,8 @@ export type LogMeta = {
   flagEditAfterFailure?: boolean;
   /** From `redaction.extra_patterns`, applied on top of the built-in rules. */
   extraRedactions?: RedactionRule[];
+  /** Filters out paths git ignores; omitted, every path is kept. */
+  notIgnored?: (paths: string[]) => string[];
 };
 
 
@@ -86,7 +101,19 @@ export function buildLog(
     return text;
   };
 
-  const rel = (p: string): string => (meta.repoRoot ? relativize(p, meta.repoRoot) : p);
+  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
+  // Longest first, so `src/a/b.ts` wins over `b.ts` when matching a path's end.
+  const diffPaths = fromDiff.map((f) => f.path).sort((a, b) => b.length - a.length);
+  /**
+   * A path as published. Without a repository root there is nothing to make
+   * an absolute path relative to: it becomes its diff path when it ends with
+   * one, and otherwise its name, never its location.
+   */
+  const rel = (p: string): string => {
+    if (meta.repoRoot) return relativize(p, meta.repoRoot);
+    if (!isAbsolute(p)) return p;
+    return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename(p);
+  };
 
   const verification: Verification[] = [];
   let otherCommands = 0;
@@ -128,7 +155,6 @@ export function buildLog(
   // often write files from the shell, which no edit event records. The edit
   // tools' counts are added where they exist.
   const role = (file: string): Change['role'] => (isTestFile(file) ? 'test' : 'source');
-  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   const changes: Change[] = fromDiff.length > 0
     ? [
         ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
@@ -139,11 +165,21 @@ export function buildLog(
       ]
     : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
 
+  const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
+  const present = fromDiff.filter((f) => f.status !== 'deleted').map((f) => f.path);
+  const commandTexts = events.flatMap((e) => (e.kind === 'command' ? [e.command] : []));
+  const missing = fromDiff.length > 0 ? neverRun(present, commandTexts) : [];
+  const risky = riskyFiles(fromDiff.map((f) => f.path));
+  const scope = fromDiff.length > 0 ? summariseScope(fromDiff) : undefined;
+  const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
+  // Without a root, "inside the repository" cannot be decided, so nothing is listed.
+  const strayWrites = fromDiff.length > 0 && meta.repoRoot ? (meta.notIgnored ? meta.notIgnored(unlisted) : unlisted) : [];
+
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags: Flag[] = timeline.map((f) => ({
     ...f,
     file: rel(f.file),
-    detail: clean(meta.repoRoot ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail),
+    detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail, meta.repoRoot)),
   }));
 
   // Code changed but nothing verified it.
@@ -153,7 +189,7 @@ export function buildLog(
       code: 'NO_TEST_RUN',
       severity: 'warn',
       file: '',
-      detail: `${changes.length} file(s) changed and no test command was recorded in this session.`,
+      detail: `${changes.length} ${changes.length === 1 ? 'file' : 'files'} changed and no test command was recorded in this session.`,
       evidence: [],
     });
   }
@@ -178,8 +214,13 @@ export function buildLog(
     otherCommands,
     changes,
     flags,
+    checks,
+    neverRun: missing,
+    risky,
+    ...(scope ? { scope } : {}),
+    strayWrites,
     // Model text, so it passes through the same redactor as everything else.
-    decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
+    decisions: decisions.map((d) => ({ ...d, text: clean(scrubPaths(d.text, meta.repoRoot)) })),
     redaction: { hits: rules.size, rules: [...rules] },
   };
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeDiff } from '../src/flags/diff-signals.ts';
+import { analyzeDiff, changedFiles } from '../src/flags/diff-signals.ts';
 
 /** A minimal unified diff for one file. `-` and `+` prefixes mark removed and added lines. */
 function fileDiff(path: string, body: string[], opts: { deleted?: boolean } = {}): string {
@@ -346,4 +346,18 @@ test('adding the todo option is not also read as a deleted test', () => {
     "-test('adds small numbers', () => {",
     "+test('adds small numbers', { todo: 'later' }, () => {",
   ]), 'TEST_DELETED'), []);
+});
+
+// changedFiles line counts and binary marker
+
+test('changed files carry their added and removed line counts', () => {
+  const diff = ['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -1,2 +1,3 @@', ' keep', '-old', '+new', '+more'].join('\n');
+
+  assert.deepEqual(changedFiles(diff), [{ path: 'a.ts', status: 'modified', added: 2, removed: 1, binary: false }]);
+});
+
+test('a binary file is marked and counts no lines', () => {
+  const diff = ['diff --git a/logo.png b/logo.png', 'new file mode 100644', 'index 0000000..1111111', 'Binary files /dev/null and b/logo.png differ'].join('\n');
+
+  assert.deepEqual(changedFiles(diff), [{ path: 'logo.png', status: 'added', added: 0, removed: 0, binary: true }]);
 });

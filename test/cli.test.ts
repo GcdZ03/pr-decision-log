@@ -153,3 +153,19 @@ test('an unknown flag is refused before the command runs', () => {
     assert.match(run('sessions').out, /sess-cli-1/, 'purge did not run');
   });
 });
+
+test('pdl show lists the prompts locally and says they are never published', () => {
+  withRepo(({ repo, run }) => {
+    const transcript = join(repo, '..', 'transcript.jsonl');
+    writeFileSync(transcript, `${JSON.stringify({ type: 'user', timestamp: '2026-09-26T10:00:30.000Z', message: { role: 'user', content: 'fix the flaky test' } })}\n`);
+    const turns = join(repo, '..', 'store', 'turns.jsonl');
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: repo, encoding: 'utf8' }).trim();
+    writeFileSync(turns, `${JSON.stringify({ session: 'sess-cli-1', repo: root, branch: 'feat', at: '2026-09-26T10:01:00.000Z', transcript })}\n`);
+
+    const r = run('show');
+
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /Prompts \(local only, never published\)/);
+    assert.match(r.out, /10:00 {2}fix the flaky test/);
+  });
+});

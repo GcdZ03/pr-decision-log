@@ -27,3 +27,16 @@ export function defaultBase(cwd: string = process.cwd()): string {
   const r = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
   return r.ok ? r.out.trim().replace(/^origin\//, '') || 'main' : 'main';
 }
+
+/**
+ * The paths git does not ignore, for listing files the session wrote that the
+ * diff lacks: logs and build output are ignored, so they never make the list.
+ * Exit 1 means none are ignored; anything else (not a repository) keeps them all.
+ */
+export function notIgnoredIn(cwd: string, paths: string[]): string[] {
+  if (paths.length === 0) return [];
+  const p = spawnSync('git', ['check-ignore', '--stdin'], { cwd, input: paths.join('\n'), encoding: 'utf8' });
+  if (p.status !== 0 && p.status !== 1) return paths;
+  const ignored = new Set((p.stdout ?? '').split('\n').filter(Boolean));
+  return paths.filter((x) => !ignored.has(x));
+}

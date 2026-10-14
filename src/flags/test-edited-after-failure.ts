@@ -46,17 +46,33 @@ export function summariseCommand(command: string): string {
   return runnerFragment(command) ?? `(${classifyCommand(command)} command)`;
 }
 
-function detail(failure: CommandEvent, first: EditEvent, last: EditEvent): string {
-  // The count covers only the edited fragment, so an unchanged one says
-  // nothing and "0 -> 0" reads as an empty test. Shown only when it moved.
+const hhmm = (at: string): string => /T(\d{2}:\d{2})/.exec(at)?.[1] ?? at;
+
+function gap(from: string, to: string): string {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1000);
+  if (!Number.isFinite(s) || s < 0) return '';
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
+}
+
+/**
+ * One sentence a reviewer can act on: what failed, how the test was changed
+ * and how soon, and whether the failure was resolved. The assertion count is
+ * added only when it moved, since an unchanged count says nothing.
+ */
+function detail(failure: CommandEvent, w: { first: EditEvent; last: EditEvent; count: number; viaShell: number }, passed?: CommandEvent): string {
+  const how = w.viaShell === w.count ? 'from the shell' : w.viaShell === 0 ? 'with the Edit tool' : 'with the Edit tool and from the shell';
+  const soon = gap(failure.at, w.first.at);
+  const change = w.count === 1
+    ? `the test was ${how === 'from the shell' ? 'written from the shell' : `changed ${how}`}${soon ? ` ${soon} later` : ''}`
+    : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ''}`;
+  const after = passed ? `it passed at ${hhmm(passed.at)}` : 'it has not passed since';
   const counts =
-    first.assertionsBefore !== undefined &&
-    last.assertionsAfter !== undefined &&
-    first.assertionsBefore !== last.assertionsAfter
-      ? `; assertion count ${first.assertionsBefore} -> ${last.assertionsAfter}`
+    w.first.assertionsBefore !== undefined && w.last.assertionsAfter !== undefined && w.first.assertionsBefore !== w.last.assertionsAfter
+      ? ` Assertion count ${w.first.assertionsBefore} -> ${w.last.assertionsAfter}.`
       : '';
-  const when = first.id === last.id ? `at ${first.at}` : `${first.at}-${last.at}`;
-  return `Edited ${when}, after \`${summariseCommand(failure.command)}\` failed at ${failure.at} and before it passed again${counts}.`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${after}.${counts}`;
 }
 
 /**
@@ -76,18 +92,18 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   // Within one window, collapse repeated edits to the same file into one flag
   // spanning first-seen to last-seen. Counting each edit separately is what
   // inflated the spike's original measurement.
-  let window = new Map<string, { first: EditEvent; last: EditEvent }>();
+  let window = new Map<string, { first: EditEvent; last: EditEvent; count: number; viaShell: number }>();
 
-  const emit = (failure: CommandEvent) => {
-    for (const { first, last } of window.values()) {
-      if (isPurelyAdditive(first.assertionsBefore, last.assertionsAfter)) continue;
-      if (first.additive && last.additive) continue; // Appends only: nothing was taken out.
+  const emit = (failure: CommandEvent, passed?: CommandEvent) => {
+    for (const w of window.values()) {
+      if (isPurelyAdditive(w.first.assertionsBefore, w.last.assertionsAfter)) continue;
+      if (w.first.additive && w.last.additive) continue; // Appends only: nothing was taken out.
       flags.push({
         code: 'TEST_EDITED_AFTER_FAILURE',
         severity: 'warn',
-        file: first.path,
-        detail: detail(failure, first, last),
-        evidence: [failure.id, first.id],
+        file: w.first.path,
+        detail: detail(failure, w, passed),
+        evidence: [failure.id, w.first.id],
       });
     }
     window = new Map();
@@ -104,7 +120,7 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
         openFailure = e;
       } else if (e.outcome === 'pass' && openFailure && sameRun(e, openFailure)) {
         // The window closes on green: the failure this command reported is resolved.
-        emit(openFailure);
+        emit(openFailure, e);
         openFailure = null;
       }
     } else if (e.kind === 'edit' && openFailure) {
@@ -113,8 +129,9 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
       if (!isTestFile(e.path)) continue;
       if (!failureNamesFile(openFailure.output ?? '', e.path)) continue;
       const seen = window.get(e.path);
-      if (seen) seen.last = e;
-      else window.set(e.path, { first: e, last: e });
+      const shell = e.via === 'shell' ? 1 : 0;
+      if (seen) { seen.last = e; seen.count += 1; seen.viaShell += shell; }
+      else window.set(e.path, { first: e, last: e, count: 1, viaShell: shell });
     }
   }
 

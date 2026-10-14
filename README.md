@@ -21,29 +21,55 @@ Then open Claude Code in a repository, accept the trust prompt, and work as usua
 
 ## What a published log looks like
 
-Real output from a scratch repository where an agent was told to make a failing test pass *without touching the code*. It declined to change the expected values, and marked the test `todo` instead, which keeps it running but stops its failure from failing the suite. Re-rendered by 0.1.5 from the same recorded events, except the `TEST_SKIPPED` line, which comes from the PR diff and is kept from the original run because the scratch repository no longer exists:
+Rendered from a fixed example session (the repository's golden test), so the layout here is exactly what pdl produces:
 
 ```markdown
+<!-- pdl:start v=1 sha=abc1234 -->
 ## Decision log
 
-*Recorded automatically from the agent session on `agent-change`. Everything below is observed from tool events, not the model's self-report.*
+**Checks (last run):** pytest ✓ · pnpm test ✓
+**Never run:** docker build (a Docker file changed) · Intent: see the PR description.
 
-### Flags
-- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at 2026-09-26T02:31:10.374Z, after `npm test` failed at 2026-09-26T02:31:00.491Z and before it passed again.
-- **TEST_SKIPPED** `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
+### Decisions you confirmed
+- Upload storage: Local volume
 
-### Verification (recorded)
+### Look here
+- **Test changed after it failed** `services/api/tests/test_parsing.py`: `uv run pytest services/api/tests/test_parsing.py -q` failed at 06:18; the test was written from the shell 8 s later; it passed at 06:18.
+- **Privileged or risky files:** CI and automation: `.github/workflows/ci.yml` · dependencies: `uv.lock`
 
-| When | Command | Result |
-| --- | --- | --- |
-| 02:31 | `npm test` | fail |
-| 02:31 | `npm test` | pass |
+### Scope
++111 −0 lines · 6 files (3 added) · services/api · apps/web · (root) · .github
+Tests: 1 file changed (1 added) · Largest: `services/api/src/parsing.py` (41 lines), `services/api/tests/test_parsing.py` (27 lines)
 
-### Changes
-- `sum.test.js` (test) - 1 edit
+<details><summary>every check (3 distinct, 4 runs) · every file (6) · 2 other commands</summary>
+
+#### Checks
+
+| Check | Runs | Failures | Last result | Last run |
+| --- | --- | --- | --- | --- |
+| `uv run pytest services/api -q` | 1 | 0 | pass | 06:17 |
+| `uv run pytest services/api/tests/test_parsing.py -q` | 2 | 1 | pass | 06:18 |
+| `pnpm --filter @app/web test` | 1 | 0 | pass | 06:21 |
+
+Auto-fixes: `uv run ruff check --fix .`
+
+#### Files
+- `services/api/src/parsing.py` (added)
+- `services/api/tests/test_parsing.py` (added, test)
+- `services/api/Dockerfile`
+- `apps/web/src/lib/imports.ts` (added)
+- `.github/workflows/ci.yml`
+- `uv.lock`
+
+2 other commands (file writes, searches, git) not listed.
+
+</details>
+
+<sub>Recorded from the agent session on `feat/imports`: observed from tool events, not the model's own account; times are UTC. [What this is](https://github.com/GcdZ03/pr-decision-log) · Redaction: 0 rules applied.</sub>
+<!-- pdl:end -->
 ```
 
-When the session contains them, **Decisions**, **Assumptions** and **Open items** sections follow: questions you answered, marked *(confirmed by a human)*, and sentences where the agent explained a choice, marked *(stated)*. On most pull requests there are none, and the sections are left out rather than shown empty.
+Questions you answered appear under **Decisions you confirmed**, showing only the option you picked; an answer you typed yourself shows as *answered in the session*. Sentences where the agent explained a choice, its assumptions and its open items are listed inside the collapsed details, labelled *(stated)*. Both are left out when there are none, which is the common case.
 
 ## The finding that shaped it
 
@@ -57,7 +83,7 @@ Measured over 50 real Claude Code sessions on this machine:
 | Does the agent explain *why* before editing? | **Rarely.** 26 of 881 edits (3%), median 0 per session. |
 | Is the evidence timeline there? | **Yes.** Commands 50/50 sessions, test runs 48/50. |
 
-So the product leads with evidence, and an empty Decisions section is the expected case rather than a bug. A tool that promised "the agent's reasoning" would have shipped an empty section on 49 of 50 pull requests.
+So the product leads with evidence, and an empty decisions block is the expected case rather than a bug. A tool that promised "the agent's reasoning" would have shipped an empty section on 49 of 50 pull requests.
 
 A second measurement, over 23 sessions, revised it again: the single richest source of genuine decisions is not the agent's prose at all, but **questions the human answered** — 98 of them, each one a point where a person actually committed to something.
 
@@ -72,14 +98,15 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 | Assertion counts before and after | File contents or diffs |
 | Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
 | Your answers to the agent's questions, when you picked an offered option | Answers you typed yourself ("Other"): shown only as *answered in the session* |
+| Tool names and pass/fail per check, risky-file categories, line and file counts | Which commands were run to get there, beyond the runner fragment |
 
 Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
 
 The runner fragment is an allowlist too. Heredoc bodies and quoted strings are emptied before a command is read at all, since agents write files with `cat > f <<'EOF'` and pass PR bodies as quoted arguments; an earlier version once published a test file's `import` line as the command that ran. The runner must be the command itself (`cat > vitest.config.ts` runs `cat`), and its arguments are kept only while they are plain words: the first absolute path, variable, quote or redirect ends the fragment. Commands are classified when the log is built, so logs built from events recorded by an older version are corrected too.
 
-**Changes come from the PR diff**, so a file the agent wrote from the shell is listed like any other, with its status (added, deleted, renamed). Counts of the agent's own edit-tool edits are added where they exist, and an edited file the diff does not contain is marked *not in diff* (uncommitted, or reverted). Past 30 files the list says how many more.
+**The file list comes from the PR diff** and sits inside the collapsed details, so a file the agent wrote from the shell is listed like any other, with its status (added, deleted, renamed). The visible Scope block summarises size, areas, test files and the largest files. A shell-only file the diff does not contain is left out of the list, and is counted under "Written during the session but not in the diff" when git does not ignore it. Past 100 files the list says how many more.
 
-**Files written from the shell count as edits.** Across the stored sessions, 73% of file writes went through the shell (`cat > f <<'EOF'`, `sed -i`, a Python or Node script) rather than the edit tools, including 36 of 51 writes to test files, and the test-edit flag saw none of them. pdl now reads the files a command writes from its text when it is recorded: redirects, `tee`, `sed -i`, `cp` and `mv` destinations, and files a heredoc script opens for writing, through a literal or a variable assigned one. Only paths and assertion counts are stored. An append never raises the flag, and a file only ever written from the shell that the diff does not contain (a log, a scratch file) is left out of Changes. In a planted run where an agent was told to make a failing test pass using only `sed -i`, 0.1.4 raised nothing and 0.1.5 raises `TEST_EDITED_AFTER_FAILURE`. Over the stored sessions it adds three flags: one where an agent changed a test's expected value after it failed, which is the point, and two where a script only added `# noqa` comments, which it cannot tell apart, since what a script wrote is not known.
+**Files written from the shell count as edits.** Across the stored sessions, 73% of file writes went through the shell (`cat > f <<'EOF'`, `sed -i`, a Python or Node script) rather than the edit tools, including 36 of 51 writes to test files, and the test-edit flag saw none of them. pdl now reads the files a command writes from its text when it is recorded: redirects, `tee`, `sed -i`, `cp` and `mv` destinations, and files a heredoc script opens for writing, through a literal or a variable assigned one. Only paths and assertion counts are stored. An append never raises the flag, and a file only ever written from the shell that the diff does not contain (a log, a scratch file) is left out of the file list and, when git does not ignore it, counted under "Written during the session but not in the diff". In a planted run where an agent was told to make a failing test pass using only `sed -i`, 0.1.4 raised nothing and 0.1.5 raises `TEST_EDITED_AFTER_FAILURE`. Over the stored sessions it adds three flags: one where an agent changed a test's expected value after it failed, which is the point, and two where a script only added `# noqa` comments, which it cannot tell apart, since what a script wrote is not known.
 
 ## What it flags
 
@@ -177,7 +204,7 @@ To see the log before there is a PR, run `pdl build` on the branch. To see the r
 | `pdl init [--user]` | Register hooks in this repository's `.claude/settings.json`, or with `--user` in `~/.claude/settings.json` |
 | `pdl remove [--user]` | Take pdl's hooks back out of that settings file, leaving other hooks alone |
 | `pdl build [session]` | Print the log without publishing: the current branch's, or one session's |
-| `pdl show [session]` | Print the recorded timeline and any flags: the current branch's, or one session's |
+| `pdl show [session]` | Print the recorded timeline, any flags and, locally only, the session's prompts: the current branch's, or one session's |
 | `pdl sessions [--all]` | List recorded sessions for this repository, newest first, with their ids and branches |
 | `pdl publish <session> <pr>` | Publish one session's log to a pull request by hand |
 | `pdl purge` | Delete every recorded session |
@@ -266,7 +293,7 @@ If pdl is registered twice — user and project settings, or plugin and `init` �
 
 ## Limitations, honestly
 
-- **The Decisions section is usually empty.** That is the measured reality, not a defect. It is suppressed rather than rendered as "none recorded".
+- **Decisions you confirmed is usually absent.** That is the measured reality, not a defect. It is suppressed rather than rendered as "none recorded".
 - **Stated decisions run about two useful items in three.** The agent's prose uses rationale words rhetorically ("verify X rather than guess"). A narration filter removes most of it; the `(stated)` label carries the rest.
 - **Plan-mode extraction is not implemented.** Zero `ExitPlanMode` uses exist across 170+ transcripts here, so there is no sample to build against. Guessing at the schema is how the spike got three things wrong once already.
 - **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.

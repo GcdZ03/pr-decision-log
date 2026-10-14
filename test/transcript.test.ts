@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readTranscript, toolUses, assistantText } from '../src/extract/transcript.ts';
+import { readTranscript, toolUses, assistantText, userPrompts } from '../src/extract/transcript.ts';
 
 function withTranscript(lines: unknown[], fn: (path: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'pdl-tx-'));
@@ -69,4 +69,21 @@ test('a thinking block contributes no text, because they are stored empty', () =
   withTranscript([assistant([{ type: 'thinking', thinking: '' }])], (p) => {
     assert.equal(assistantText(readTranscript(p)[0]!), '');
   });
+});
+
+test('user prompts are the human turns, not tool results, meta entries, commands or subagents', () => {
+  const prompts = userPrompts([
+    { type: 'user', timestamp: '2026-10-03T06:00:00Z', message: { role: 'user', content: 'Add CSV import\nwith a preview' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } },
+    { type: 'user', isMeta: true, message: { role: 'user', content: 'Caveat: meta' } },
+    { type: 'user', message: { role: 'user', content: '<command-name>/clear</command-name>' } },
+    { type: 'user', isSidechain: true, message: { role: 'user', content: 'subagent prompt' } },
+    { type: 'user', timestamp: '2026-10-03T06:05:00Z', message: { role: 'user', content: [{ type: 'text', text: 'now the upload UI' }] } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'sure' }] } },
+  ]);
+
+  assert.deepEqual(prompts, [
+    { at: '2026-10-03T06:00:00Z', text: 'Add CSV import\nwith a preview' },
+    { at: '2026-10-03T06:05:00Z', text: 'now the upload UI' },
+  ]);
 });

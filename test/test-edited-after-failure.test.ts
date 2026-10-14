@@ -200,7 +200,7 @@ test('a changed assertion count is still shown', () => {
     cmd('c2', '09:02', 'npm test', 'pass'),
   ]);
 
-  assert.match(flags[0]?.detail ?? '', /assertion count 2 -> 1/);
+  assert.match(flags[0]?.detail ?? '', /Assertion count 2 -> 1/);
 });
 
 // Shell writes reach the detector as edit events, expanded from the command
@@ -215,7 +215,7 @@ test('a test file rewritten from the shell after a failure is flagged', () => {
 
   assert.equal(flags.length, 1);
   assert.equal(flags[0]?.file, 'src/a.test.ts');
-  assert.match(flags[0]?.detail ?? '', /after `pnpm test` failed/);
+  assert.match(flags[0]?.detail ?? '', /^\`pnpm test\` failed at /);
 });
 
 test('an append to a test file after a failure only adds, so it is not flagged', () => {
@@ -249,5 +249,25 @@ test('a failing command that is not a test run neither opens nor closes a window
   ]));
 
   assert.equal(flags.length, 1, JSON.stringify(flags));
-  assert.match(flags[0]?.detail ?? '', /after `npm test` failed/);
+  assert.match(flags[0]?.detail ?? '', /^\`npm test\` failed at /);
+});
+
+test('the flag says what failed, how and how soon the test changed, and when it passed', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    { kind: 'command', id: 'c1', at: '2026-10-03T06:18:32.200Z', command: 'uv run pytest tests/test_p.py -q', classification: 'test', outcome: 'fail', output: 'FAILED tests/test_p.py::t' },
+    { kind: 'command', id: 'w1', at: '2026-10-03T06:18:40.247Z', command: "python3 - <<'EOF'\nx\nEOF", classification: 'other', outcome: 'pass', writes: [{ path: 'tests/test_p.py' }] },
+    { kind: 'command', id: 'c2', at: '2026-10-03T06:19:52.000Z', command: 'uv run pytest tests/test_p.py -q', classification: 'test', outcome: 'pass' },
+  ]));
+
+  assert.equal(flags[0]?.detail, '`uv run pytest tests/test_p.py -q` failed at 06:18; the test was written from the shell 8 s later; it passed at 06:19.');
+});
+
+test('several edits are counted, and a failure that never passed says so', () => {
+  const flags = detectTestEditedAfterFailure([
+    cmd('c1', '2026-10-03T09:00:00Z', 'npm test', 'fail', 'FAIL src/a.test.ts'),
+    edit('e1', '2026-10-03T09:02:00Z', 'src/a.test.ts', 3, 2),
+    edit('e2', '2026-10-03T09:05:00Z', 'src/a.test.ts', 2, 1),
+  ]);
+
+  assert.equal(flags[0]?.detail, '`npm test` failed at 09:00; the test was changed 2 times with the Edit tool, first 2 min later; it has not passed since. Assertion count 3 -> 1.');
 });

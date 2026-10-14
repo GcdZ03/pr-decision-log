@@ -350,7 +350,7 @@ test('a check is one distinct runner fragment, with its runs, failures and last 
 
 test('tool names come from the runner, not its launcher or arguments', () => {
   const cases: [string, string][] = [
-    ['pnpm --filter @atlas/web build', 'pnpm build'],
+    ['pnpm --filter @acme/web build', 'pnpm build'],
     ['pnpm run typecheck', 'pnpm typecheck'],
     ['npm test --', 'npm test'],
     ['npx vitest run', 'vitest'],
