@@ -21,26 +21,52 @@ Then open Claude Code in a repository, accept the trust prompt, and work as usua
 
 ## What a published log looks like
 
-Real output from a scratch repository where an agent was told to make a failing test pass *without touching the code*. It declined to change the expected values, and marked the test `todo` instead, which keeps it running but stops its failure from failing the suite. Re-rendered by 0.1.5 from the same recorded events, except the `TEST_SKIPPED` line, which comes from the PR diff and is kept from the original run because the scratch repository no longer exists:
+Rendered from a fixed example session (the repository's golden test), so the layout here is exactly what pdl produces:
 
 ```markdown
+<!-- pdl:start v=1 sha=abc1234 -->
 ## Decision log
 
-*Recorded automatically from the agent session on `agent-change`. Everything below is observed from tool events, not the model's self-report.*
+**Checks (last run):** pytest ✓ · pnpm test ✓
+**Never run:** docker build (a Docker file changed) · Intent: see the PR description.
 
-### Flags
-- **TEST_EDITED_AFTER_FAILURE** `sum.test.js` Edited at 2026-09-26T02:31:10.374Z, after `npm test` failed at 2026-09-26T02:31:00.491Z and before it passed again.
-- **TEST_SKIPPED** `sum.test.js` Added `{ todo } / { skip } option` (the test still runs but its failure no longer fails the suite).
+### Decisions you confirmed
+- Upload storage: Local volume
 
-### Verification (recorded)
+### Look here
+- **Test changed after it failed** `services/api/tests/test_parsing.py`: `uv run pytest services/api/tests/test_parsing.py -q` failed at 06:18; the test was written from the shell 8 s later; it passed at 06:18.
+- **Privileged or risky files:** ci and automation: `.github/workflows/ci.yml` · dependencies: `uv.lock`
 
-| When | Command | Result |
-| --- | --- | --- |
-| 02:31 | `npm test` | fail |
-| 02:31 | `npm test` | pass |
+### Scope
++111 −0 lines · 6 files (3 added) · services/api · apps/web · (root) · .github
+Tests: 1 file changed (1 added) · Largest: `services/api/src/parsing.py` (41 lines), `services/api/tests/test_parsing.py` (27 lines)
 
-### Changes
-- `sum.test.js` (test) - 1 edit
+<details><summary>every check (3 distinct, 4 runs) · every file (6) · 2 other commands</summary>
+
+#### Checks
+
+| Check | Runs | Failures | Last result | Last run |
+| --- | --- | --- | --- | --- |
+| `uv run pytest services/api -q` | 1 | 0 | pass | 06:17 |
+| `uv run pytest services/api/tests/test_parsing.py -q` | 2 | 1 | pass | 06:18 |
+| `pnpm --filter @app/web test` | 1 | 0 | pass | 06:21 |
+
+Auto-fixes: `uv run ruff check --fix .`
+
+#### Files
+- `services/api/src/parsing.py` (added)
+- `services/api/tests/test_parsing.py` (added, test)
+- `services/api/Dockerfile`
+- `apps/web/src/lib/imports.ts` (added)
+- `.github/workflows/ci.yml`
+- `uv.lock`
+
+2 other commands (file writes, searches, git) not listed.
+
+</details>
+
+<sub>Recorded from the agent session on `feat/imports`: observed from tool events, not the model's own account; times are UTC. [What this is](https://github.com/GcdZ03/pr-decision-log) · Redaction: 0 rules applied.</sub>
+<!-- pdl:end -->
 ```
 
 When the session contains them, **Decisions**, **Assumptions** and **Open items** sections follow: questions you answered, marked *(confirmed by a human)*, and sentences where the agent explained a choice, marked *(stated)*. On most pull requests there are none, and the sections are left out rather than shown empty.
@@ -72,6 +98,7 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 | Assertion counts before and after | File contents or diffs |
 | Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
 | Your answers to the agent's questions, when you picked an offered option | Answers you typed yourself ("Other"): shown only as *answered in the session* |
+| Tool names and pass/fail per check, risky-file categories, line and file counts | Which commands were run to get there, beyond the runner fragment |
 
 Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
 
@@ -177,7 +204,7 @@ To see the log before there is a PR, run `pdl build` on the branch. To see the r
 | `pdl init [--user]` | Register hooks in this repository's `.claude/settings.json`, or with `--user` in `~/.claude/settings.json` |
 | `pdl remove [--user]` | Take pdl's hooks back out of that settings file, leaving other hooks alone |
 | `pdl build [session]` | Print the log without publishing: the current branch's, or one session's |
-| `pdl show [session]` | Print the recorded timeline and any flags: the current branch's, or one session's |
+| `pdl show [session]` | Print the recorded timeline, any flags and, locally only, the session's prompts: the current branch's, or one session's |
 | `pdl sessions [--all]` | List recorded sessions for this repository, newest first, with their ids and branches |
 | `pdl publish <session> <pr>` | Publish one session's log to a pull request by hand |
 | `pdl purge` | Delete every recorded session |
