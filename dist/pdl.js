@@ -671,10 +671,21 @@ function isPurelyAdditive(before, after) {
 function summariseCommand(command2) {
   return runnerFragment(command2) ?? `(${classifyCommand(command2)} command)`;
 }
-function detail(failure, first, last) {
-  const counts = first.assertionsBefore !== void 0 && last.assertionsAfter !== void 0 && first.assertionsBefore !== last.assertionsAfter ? `; assertion count ${first.assertionsBefore} -> ${last.assertionsAfter}` : "";
-  const when = first.id === last.id ? `at ${first.at}` : `${first.at}-${last.at}`;
-  return `Edited ${when}, after \`${summariseCommand(failure.command)}\` failed at ${failure.at} and before it passed again${counts}.`;
+var hhmm = (at) => /T(\d{2}:\d{2})/.exec(at)?.[1] ?? at;
+function gap(from, to) {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1e3);
+  if (!Number.isFinite(s) || s < 0) return "";
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
+}
+function detail(failure, w, passed) {
+  const how = w.viaShell === w.count ? "from the shell" : w.viaShell === 0 ? "with the Edit tool" : "with the Edit tool and from the shell";
+  const soon = gap(failure.at, w.first.at);
+  const change = w.count === 1 ? `the test was ${how === "from the shell" ? "written from the shell" : `changed ${how}`}${soon ? ` ${soon} later` : ""}` : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ""}`;
+  const after = passed ? `it passed at ${hhmm(passed.at)}` : "it has not passed since";
+  const counts = w.first.assertionsBefore !== void 0 && w.last.assertionsAfter !== void 0 && w.first.assertionsBefore !== w.last.assertionsAfter ? ` Assertion count ${w.first.assertionsBefore} -> ${w.last.assertionsAfter}.` : "";
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${after}.${counts}`;
 }
 function sameRun(a, b) {
   if (a.command === b.command) return true;
@@ -685,16 +696,16 @@ function detectTestEditedAfterFailure(events) {
   const flags = [];
   let openFailure = null;
   let window = /* @__PURE__ */ new Map();
-  const emit = (failure) => {
-    for (const { first, last } of window.values()) {
-      if (isPurelyAdditive(first.assertionsBefore, last.assertionsAfter)) continue;
-      if (first.additive && last.additive) continue;
+  const emit = (failure, passed) => {
+    for (const w of window.values()) {
+      if (isPurelyAdditive(w.first.assertionsBefore, w.last.assertionsAfter)) continue;
+      if (w.first.additive && w.last.additive) continue;
       flags.push({
         code: "TEST_EDITED_AFTER_FAILURE",
         severity: "warn",
-        file: first.path,
-        detail: detail(failure, first, last),
-        evidence: [failure.id, first.id]
+        file: w.first.path,
+        detail: detail(failure, w, passed),
+        evidence: [failure.id, w.first.id]
       });
     }
     window = /* @__PURE__ */ new Map();
@@ -706,15 +717,19 @@ function detectTestEditedAfterFailure(events) {
         if (openFailure) emit(openFailure);
         openFailure = e;
       } else if (e.outcome === "pass" && openFailure && sameRun(e, openFailure)) {
-        emit(openFailure);
+        emit(openFailure, e);
         openFailure = null;
       }
     } else if (e.kind === "edit" && openFailure) {
       if (!isTestFile(e.path)) continue;
       if (!failureNamesFile(openFailure.output ?? "", e.path)) continue;
       const seen = window.get(e.path);
-      if (seen) seen.last = e;
-      else window.set(e.path, { first: e, last: e });
+      const shell = e.via === "shell" ? 1 : 0;
+      if (seen) {
+        seen.last = e;
+        seen.count += 1;
+        seen.viaShell += shell;
+      } else window.set(e.path, { first: e, last: e, count: 1, viaShell: shell });
     }
   }
   if (openFailure) emit(openFailure);
