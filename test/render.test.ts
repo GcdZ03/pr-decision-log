@@ -59,7 +59,7 @@ test('never-run gaps and the intent pointer share the second line', () => {
 test('risky files are one bullet under Look here, grouped by category', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: [fileDiff('.github/workflows/ci.yml'), fileDiff('uv.lock')].join('\n') }));
 
-  assert.match(md, /- \*\*Privileged or risky files:\*\* ci and automation: `\.github\/workflows\/ci\.yml` · dependencies: `uv\.lock`/);
+  assert.match(md, /- \*\*Privileged or risky files:\*\* CI and automation: `\.github\/workflows\/ci\.yml` · dependencies: `uv\.lock`/);
 });
 
 test('scope gives size, spread, tests and the largest files', () => {
@@ -138,7 +138,8 @@ test('a tight budget drops the details first, with a note', () => {
 test('a path with a pipe or a backtick cannot break the table or the code span', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: [fileDiff('src/we|ird.ts'), fileDiff('src/tick`name.ts')].join('\n') }));
 
-  assert.match(md, /- `src\/we\\\|ird\.ts`|- `src\/we\|ird\.ts`/);
+  // A list item is not a table row, so the pipe stays as written; GitHub would show a backslash.
+  assert.ok(md.includes('\n- `src/we|ird.ts`\n'), md);
   assert.match(md, /- ``src\/tick`name\.ts``/);
 });
 
@@ -262,4 +263,11 @@ test('the summary counts the decisions a visible pointer sends the reader to', (
   const md = render(bigLog(3), { maxChars: 1_000_000 });
 
   assert.match(md, /<summary>[^<]*more decisions \(3\)[^<]*<\/summary>/);
+});
+
+test('counts are singular when there is one', () => {
+  const md = render(buildLog([run('npm test')], { ...meta, diff: [fileDiff('src/a.ts', 1), fileDiff('src/b.ts', 2)].join('\n') }));
+
+  assert.match(md, /Largest: `src\/b\.ts` \(2 lines\), `src\/a\.ts` \(1 line\)/);
+  assert.match(md, /<summary>every check \(1 distinct, 1 run\)/);
 });

@@ -35,7 +35,7 @@ Rendered from a fixed example session (the repository's golden test), so the lay
 
 ### Look here
 - **Test changed after it failed** `services/api/tests/test_parsing.py`: `uv run pytest services/api/tests/test_parsing.py -q` failed at 06:18; the test was written from the shell 8 s later; it passed at 06:18.
-- **Privileged or risky files:** ci and automation: `.github/workflows/ci.yml` · dependencies: `uv.lock`
+- **Privileged or risky files:** CI and automation: `.github/workflows/ci.yml` · dependencies: `uv.lock`
 
 ### Scope
 +111 −0 lines · 6 files (3 added) · services/api · apps/web · (root) · .github

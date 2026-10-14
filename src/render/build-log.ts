@@ -189,7 +189,7 @@ export function buildLog(
       code: 'NO_TEST_RUN',
       severity: 'warn',
       file: '',
-      detail: `${changes.length} file(s) changed and no test command was recorded in this session.`,
+      detail: `${changes.length} ${changes.length === 1 ? 'file' : 'files'} changed and no test command was recorded in this session.`,
       evidence: [],
     });
   }

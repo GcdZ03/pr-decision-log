@@ -1323,7 +1323,7 @@ function buildLog(recorded, meta, decisions = []) {
       code: "NO_TEST_RUN",
       severity: "warn",
       file: "",
-      detail: `${changes.length} file(s) changed and no test command was recorded in this session.`,
+      detail: `${changes.length} ${changes.length === 1 ? "file" : "files"} changed and no test command was recorded in this session.`,
       evidence: []
     });
   }
@@ -1388,9 +1388,10 @@ var KIND_PREFIX = { decision: "", assumption: "Assumption: ", open_item: "Open i
 var code = (s) => s.includes("`") ? `\`\`${s}\`\`` : `\`${s}\``;
 var cell = (s) => s.replace(/\|/g, "\\|");
 var hhmm2 = (iso) => /T(\d{2}:\d{2})/.exec(iso)?.[1] ?? iso;
-var count2 = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+var count2 = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 var num = (n) => n.toLocaleString("en-US");
 var paths = (list, max = LISTED_PATHS) => list.slice(0, max).map(code).join(", ") + (list.length > max ? ` +${list.length - max} more` : "");
+var category = (name) => name.toLowerCase().replace(/\bci\b/, "CI");
 function flagLine(f, note = false) {
   const where = f.file ? ` ${code(f.file)}` : "";
   return `- **${LABEL[f.code]}**${note ? " *(note)*" : ""}${where}: ${f.detail}`;
@@ -1408,7 +1409,7 @@ function lookHere(log) {
   const warnings = log.flags.filter((f) => f.severity === "warn");
   const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(f)));
   if (log.risky.length > 0) {
-    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${g.category.toLowerCase()}: ${paths(g.paths)}`).join(" \xB7 ")}`);
+    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${paths(g.paths)}`).join(" \xB7 ")}`);
   }
   return items;
 }
@@ -1422,7 +1423,7 @@ function scopeLines(s) {
   const first = `+${num(s.added)} \u2212${num(s.removed)} lines \xB7 ${count2(s.files, "file")}` + (statuses.length ? ` (${statuses.join(", ")})` : "") + (areas ? ` \xB7 ${areas}` : "");
   const second = [
     s.testsChanged > 0 ? `Tests: ${count2(s.testsChanged, "file")} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ""}` : "",
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${num(l.lines)} lines)`).join(", ")}` : ""
+    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${count2(l.lines, "line")})`).join(", ")}` : ""
   ].filter(Boolean).join(" \xB7 ");
   return second ? [first, second] : [first];
 }

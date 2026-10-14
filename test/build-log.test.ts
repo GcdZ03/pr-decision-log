@@ -284,3 +284,11 @@ test('a macOS repo root reached through /private is stripped from decisions in e
 
   assert.equal(log.decisions[0]?.text, 'Edit src/a.ts and src/b.ts.');
 });
+
+test('NO_TEST_RUN counts files in proper English', () => {
+  const one = buildLog([edit('e1', 'src/a.ts')], meta).flags.find((f) => f.code === 'NO_TEST_RUN');
+  const two = buildLog([edit('e1', 'src/a.ts'), edit('e2', 'src/b.ts')], meta).flags.find((f) => f.code === 'NO_TEST_RUN');
+
+  assert.equal(one?.detail, '1 file changed and no test command was recorded in this session.');
+  assert.equal(two?.detail, '2 files changed and no test command was recorded in this session.');
+});

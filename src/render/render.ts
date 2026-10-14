@@ -52,10 +52,13 @@ const code = (s: string): string => (s.includes('`') ? `\`\`${s}\`\`` : `\`${s}\
 /** A table cell: a pipe splits the row even inside backticks, so it is escaped. */
 const cell = (s: string): string => s.replace(/\|/g, '\\|');
 const hhmm = (iso: string): string => /T(\d{2}:\d{2})/.exec(iso)?.[1] ?? iso;
-const count = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+const count = (n: number, one: string, many = `${one}s`): string => `${num(n)} ${n === 1 ? one : many}`;
 const num = (n: number): string => n.toLocaleString('en-US');
 const paths = (list: string[], max = LISTED_PATHS): string =>
   list.slice(0, max).map(code).join(', ') + (list.length > max ? ` +${list.length - max} more` : '');
+
+/** Lower case mid-sentence, except the acronym. */
+const category = (name: string): string => name.toLowerCase().replace(/\bci\b/, 'CI');
 
 function flagLine(f: Flag, note = false): string {
   const where = f.file ? ` ${code(f.file)}` : '';
@@ -77,7 +80,7 @@ function lookHere(log: DecisionLog): string[] {
   const warnings = log.flags.filter((f) => f.severity === 'warn');
   const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(f)));
   if (log.risky.length > 0) {
-    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${g.category.toLowerCase()}: ${paths(g.paths)}`).join(' · ')}`);
+    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${paths(g.paths)}`).join(' · ')}`);
   }
   return items;
 }
@@ -91,7 +94,7 @@ function scopeLines(s: Scope): string[] {
     + (statuses.length ? ` (${statuses.join(', ')})` : '') + (areas ? ` · ${areas}` : '');
   const second = [
     s.testsChanged > 0 ? `Tests: ${count(s.testsChanged, 'file')} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ''}` : '',
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${num(l.lines)} lines)`).join(', ')}` : '',
+    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${count(l.lines, 'line')})`).join(', ')}` : '',
   ].filter(Boolean).join(' · ');
   return second ? [first, second] : [first];
 }
