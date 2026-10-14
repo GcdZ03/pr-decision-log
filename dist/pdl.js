@@ -836,6 +836,7 @@ function parse(diff) {
         current.renamed = true;
       } else if (line.startsWith("--- a/")) current.path = line.slice(6);
       else if (line.startsWith("+++ b/")) current.path = line.slice(6);
+      else if (line.startsWith("Binary files ")) current.binary = true;
       else if (line.startsWith("@@")) inHunk = true;
       continue;
     }
@@ -848,7 +849,10 @@ function parse(diff) {
 function changedFiles(diff) {
   return parse(diff).filter((f) => f.path).map((f) => ({
     path: f.path,
-    status: f.deleted ? "deleted" : f.created ? "added" : f.renamed ? "renamed" : "modified"
+    status: f.deleted ? "deleted" : f.created ? "added" : f.renamed ? "renamed" : "modified",
+    added: f.added.length,
+    removed: f.removed.length,
+    binary: f.binary === true
   }));
 }
 var count = (lines, re) => lines.reduce((n, l) => n + (l.match(new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`)) ?? []).length, 0);

@@ -3,7 +3,7 @@ import { blankStrings, countAssertions } from './assertions.ts';
 import { isTestFile } from './test-files.ts';
 import type { Flag } from './types.ts';
 
-type FileDiff = { path: string; deleted: boolean; created?: boolean; renamed?: boolean; added: string[]; removed: string[] };
+type FileDiff = { path: string; deleted: boolean; created?: boolean; renamed?: boolean; binary?: boolean; added: string[]; removed: string[] };
 
 /**
  * Split a unified diff into per-file added and removed lines.
@@ -33,6 +33,7 @@ function parse(diff: string): FileDiff[] {
       else if (line.startsWith('rename to ')) { current.path = line.slice(10); current.renamed = true; }
       else if (line.startsWith('--- a/')) current.path = line.slice(6);
       else if (line.startsWith('+++ b/')) current.path = line.slice(6);
+      else if (line.startsWith('Binary files ')) current.binary = true;
       else if (line.startsWith('@@')) inHunk = true;
       continue;
     }
@@ -47,13 +48,18 @@ function parse(diff: string): FileDiff[] {
 
 export type FileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 
-/** Every file the diff touches, with how, in diff order. Paths are as git prints them: repo-relative. */
-export function changedFiles(diff: string): { path: string; status: FileStatus }[] {
+export type ChangedFile = { path: string; status: FileStatus; added: number; removed: number; binary: boolean };
+
+/** Every file the diff touches, with how and by how many lines, in diff order. Paths are repo-relative, as git prints them. */
+export function changedFiles(diff: string): ChangedFile[] {
   return parse(diff)
     .filter((f) => f.path)
     .map((f) => ({
       path: f.path,
       status: f.deleted ? 'deleted' : f.created ? 'added' : f.renamed ? 'renamed' : 'modified',
+      added: f.added.length,
+      removed: f.removed.length,
+      binary: f.binary === true,
     }));
 }
 
