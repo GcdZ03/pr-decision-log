@@ -1,6 +1,6 @@
 # Reviewer-first decision log
 
-Date: 2026-10-14. Status: design, awaiting review. Target release: 0.1.6.
+Date: 2026-10-14. Status: design, awaiting review. Target release: 0.1.6, together with the free-text answer fix.
 
 ## 1. Why
 
