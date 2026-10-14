@@ -944,6 +944,17 @@ function summariseChecks(events) {
   }
   return [...byCommand.values()];
 }
+var RANK = { pass: 0, unknown: 1, interrupted: 2, fail: 3 };
+function toolStatuses(checks) {
+  const out = [];
+  for (const c of checks) {
+    if (c.fixer) continue;
+    const t = out.find((x) => x.tool === c.tool);
+    if (!t) out.push({ tool: c.tool, status: c.last });
+    else if (RANK[c.last] > RANK[t.status]) t.status = c.last;
+  }
+  return out;
+}
 
 // src/review/risky.ts
 import { basename as basename2 } from "node:path";
@@ -972,9 +983,9 @@ var RULES2 = [
   // A segment, or a file's name without its extension: `auth/`, `auth.py`.
   ["Auth", (p) => p.split("/").some((seg) => AUTH_SEGMENT.test(seg.replace(/\.[^.]+$/, "")))]
 ];
-function riskyFiles(paths) {
+function riskyFiles(paths2) {
   const groups = [];
-  for (const path of paths) {
+  for (const path of paths2) {
     const rule = RULES2.find(([, matches]) => matches(path));
     if (!rule) continue;
     const group = groups.find((g) => g.category === rule[0]);
@@ -1005,9 +1016,9 @@ var NEVER_RUN_RULES = [
     satisfiedBy: /(?:alembic(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+)?upgrade\b|(?:python3?\s+)?(?:\.\/)?(?:bin\/)?manage\.py\s+migrate\b|(?:bin\/)?rails\s+db:migrate\b|(?:pnpm\s+)?prisma\s+migrate\b|(?:just|make)\s+migrate\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:alembic(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+)?upgrade\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:python3?\s+)?(?:\.\/)?(?:bin\/)?manage\.py\s+migrate\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:bin\/)?rails\s+db:migrate\b/
   }
 ];
-function neverRun(paths, commands) {
+function neverRun(paths2, commands) {
   const segments = commands.flatMap(commandSegments);
-  return NEVER_RUN_RULES.filter((r) => paths.some(r.touches) && !segments.some((s) => runsKind(s, r.satisfiedBy))).map(({ check, because }) => ({ check, because }));
+  return NEVER_RUN_RULES.filter((r) => paths2.some(r.touches) && !segments.some((s) => runsKind(s, r.satisfiedBy))).map(({ check, because }) => ({ check, because }));
 }
 
 // src/review/scope.ts
@@ -1324,19 +1335,137 @@ function buildLog(recorded, meta, decisions = []) {
 // src/render/render.ts
 var MARKER_START = "<!-- pdl:start";
 var MARKER_END = "<!-- pdl:end -->";
-var OUTCOME_LABEL = {
-  pass: "pass",
-  fail: "fail",
-  interrupted: "interrupted (cancelled)",
-  unknown: "unknown"
+var VISIBLE_ITEMS = 3;
+var LISTED_PATHS = 3;
+var LISTED_FILES = 100;
+var LISTED_STRAY = 10;
+var LABEL = {
+  TEST_EDITED_AFTER_FAILURE: "Test changed after it failed",
+  NO_TEST_RUN: "No test was run",
+  TEST_ONLY_CHANGE: "Only tests changed",
+  ASSERTIONS_REMOVED: "Assertions removed",
+  TEST_SKIPPED: "Test skipped",
+  TEST_DELETED: "Tests deleted",
+  EXPECTATION_LOOSENED: "Expected value changed"
 };
-function cell(value) {
-  return value.replace(/\|/g, "\\|");
+var WARNING_ORDER = [
+  "TEST_EDITED_AFTER_FAILURE",
+  "TEST_SKIPPED",
+  "ASSERTIONS_REMOVED",
+  "TEST_DELETED",
+  "EXPECTATION_LOOSENED",
+  "TEST_ONLY_CHANGE",
+  "NO_TEST_RUN"
+];
+var MARK = { pass: "\u2713", fail: "\u2717 (failed, not re-run)", interrupted: "\u2717 (interrupted)", unknown: "?" };
+var KIND_PREFIX = { decision: "", assumption: "Assumption: ", open_item: "Open item: " };
+var code = (s) => s.includes("`") ? `\`\`${s}\`\`` : `\`${s}\``;
+var cell = (s) => s.replace(/\|/g, "\\|");
+var hhmm2 = (iso) => /T(\d{2}:\d{2})/.exec(iso)?.[1] ?? iso;
+var count2 = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+var num = (n) => n.toLocaleString("en-US");
+var paths = (list, max = LISTED_PATHS) => list.slice(0, max).map(code).join(", ") + (list.length > max ? ` +${list.length - max} more` : "");
+function flagLine(f, note = false) {
+  const where = f.file ? ` ${code(f.file)}` : "";
+  return `- **${LABEL[f.code]}**${note ? " *(note)*" : ""}${where}: ${f.detail}`;
 }
-var MAX_CHANGES = 30;
-function timeOnly(iso) {
-  const m = /T(\d{2}:\d{2})/.exec(iso);
-  return m?.[1] ?? iso;
+function checksLine(log) {
+  const tools = toolStatuses(log.checks);
+  if (tools.length === 0) return "**Checks:** none were run.";
+  return `**Checks (last run):** ${tools.map((t) => `${t.tool} ${MARK[t.status]}`).join(" \xB7 ")}`;
+}
+function contextLine(log) {
+  const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(" \xB7 ");
+  return `${never ? `**Never run:** ${never} \xB7 ` : ""}Intent: see the PR description.`;
+}
+function lookHere(log) {
+  const warnings = log.flags.filter((f) => f.severity === "warn");
+  const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(f)));
+  if (log.risky.length > 0) {
+    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${g.category.toLowerCase()}: ${paths(g.paths)}`).join(" \xB7 ")}`);
+  }
+  return items;
+}
+function scopeLines(s) {
+  const statuses = [
+    s.created ? `${s.created} added` : "",
+    s.deleted ? `${s.deleted} deleted` : "",
+    s.renamed ? `${s.renamed} renamed` : ""
+  ].filter(Boolean);
+  const areas = s.areas.join(" \xB7 ") + (s.moreAreas > 0 ? ` +${s.moreAreas} more` : "");
+  const first = `+${num(s.added)} \u2212${num(s.removed)} lines \xB7 ${count2(s.files, "file")}` + (statuses.length ? ` (${statuses.join(", ")})` : "") + (areas ? ` \xB7 ${areas}` : "");
+  const second = [
+    s.testsChanged > 0 ? `Tests: ${count2(s.testsChanged, "file")} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ""}` : "",
+    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${num(l.lines)} lines)`).join(", ")}` : ""
+  ].filter(Boolean).join(" \xB7 ");
+  return second ? [first, second] : [first];
+}
+function capped(items) {
+  if (items.length <= VISIBLE_ITEMS) return items;
+  return [...items.slice(0, VISIBLE_ITEMS), `- *\u2026and ${items.length - VISIBLE_ITEMS} more in the details below.*`];
+}
+function details(log, moreLook, moreConfirmed) {
+  const parts = [];
+  const summary = [];
+  const checks = log.checks.filter((c) => !c.fixer);
+  const fixers = log.checks.filter((c) => c.fixer);
+  if (checks.length > 0) {
+    const rows = checks.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
+    parts.push(`#### Checks
+
+| Check | Runs | Failures | Last result | Last run |
+| --- | --- | --- | --- | --- |
+${rows.join("\n")}`);
+    summary.push(`every check (${checks.length} distinct, ${checks.reduce((n, c) => n + c.runs, 0)} runs)`);
+  }
+  if (fixers.length > 0) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ""}`).join(", ")}`);
+  if (moreLook.length > 0) {
+    parts.push(`#### More to look at
+${moreLook.join("\n")}`);
+    summary.push(`more to look at (${moreLook.length})`);
+  }
+  if (moreConfirmed.length > 0) parts.push(`#### More decisions you confirmed
+${moreConfirmed.join("\n")}`);
+  const notes = log.flags.filter((f) => f.severity === "info");
+  if (notes.length > 0) {
+    parts.push(`#### Notes
+${notes.map((f) => flagLine(f, true)).join("\n")}`);
+    summary.push(`notes (${notes.length})`);
+  }
+  const stated = log.decisions.filter((d) => d.confidence !== "confirmed_by_human");
+  if (stated.length > 0) {
+    parts.push(`#### Stated by the agent
+${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ""}${d.text} *(stated)*`).join("\n")}`);
+    summary.push(`stated by the agent (${stated.length})`);
+  }
+  const files = log.changes.filter((c) => c.status !== "not in diff");
+  if (files.length > 0) {
+    const rows = files.slice(0, LISTED_FILES).map((c) => {
+      const tags = [...c.status && c.status !== "modified" ? [c.status] : [], ...c.role === "test" ? ["test"] : []];
+      return `- ${code(cell(c.file))}${tags.length ? ` (${tags.join(", ")})` : ""}`;
+    });
+    const rest = files.length - LISTED_FILES;
+    parts.push(`#### Files
+${rows.join("\n")}${rest > 0 ? `
+
+*and ${count2(rest, "more file")}.*` : ""}`);
+    summary.push(`every file (${files.length})`);
+  }
+  if (log.strayWrites.length > 0) {
+    parts.push(`Written during the session but not in the diff: ${count2(log.strayWrites.length, "file")}: ${paths(log.strayWrites, LISTED_STRAY)}`);
+  }
+  if (log.otherCommands > 0) {
+    parts.push(`${count2(log.otherCommands, "other command")} (file writes, searches, git) not listed.`);
+    summary.push(count2(log.otherCommands, "other command"));
+  }
+  if (parts.length === 0) return "";
+  return `
+<details><summary>${summary.join(" \xB7 ") || "details"}</summary>
+
+${parts.join("\n\n")}
+
+</details>
+`;
 }
 function render(log, options = {}) {
   const max = options.maxChars ?? 12e3;
@@ -1345,101 +1474,38 @@ function render(log, options = {}) {
 ## Decision log
 `;
   const from = log.sessions.length > 1 ? `${log.sessions.length} agent sessions` : "the agent session";
-  const blurb = `
-*Recorded automatically from ${from} on \`${log.branch}\`. Everything below is observed from tool events, not the model's self-report. [What this is](${tool}).*
-`;
-  const sections = [];
-  if (log.intent) sections.push(`
-**Intent**: ${log.intent}
-`);
-  if (log.flags.length > 0) {
-    const lines = log.flags.map((f) => {
-      const where = f.file ? ` \`${f.file}\`` : "";
-      const note2 = f.severity === "info" ? " *(note)*" : "";
-      return `- **${f.code}**${note2}${where} ${f.detail}`;
-    });
-    sections.push(`
-### Flags
-${lines.join("\n")}
-`);
-  }
-  const others = log.otherCommands ?? 0;
-  const otherNote = others === 0 ? "" : `${others} other command${others === 1 ? "" : "s"}`;
-  if (log.verification.length > 0) {
-    const rows = log.verification.map(
-      (v) => `| ${timeOnly(v.at)} | \`${cell(v.command)}\` | ${OUTCOME_LABEL[v.outcome] ?? v.outcome} |`
-    );
-    const note2 = otherNote ? `
-*${otherNote} (file writes, searches, git) not listed.*
-` : "";
-    sections.push(`
-### Verification (recorded)
-
-| When | Command | Result |
-| --- | --- | --- |
-${rows.join("\n")}
-${note2}`);
-  } else if (otherNote) {
-    sections.push(`
-### Verification (recorded)
-
-No test, build or lint run was recorded. ${otherNote} not listed.
-`);
-  }
-  if (log.changes.length > 0) {
-    const shown = log.changes.slice(0, MAX_CHANGES);
-    const rows = shown.map((c) => {
-      const tags = [
-        ...c.status && c.status !== "modified" ? [c.status] : [],
-        ...c.role === "test" ? ["test"] : []
-      ];
-      const count2 = c.edits > 0 ? ` - ${c.edits} edit${c.edits === 1 ? "" : "s"}` : "";
-      return `- \`${c.file}\`${tags.length > 0 ? ` (${tags.join(", ")})` : ""}${count2}`;
-    });
-    const rest = log.changes.length - shown.length;
-    const more = rest > 0 ? `
-*and ${rest} more file${rest === 1 ? "" : "s"}.*
-` : "";
-    sections.push(`
-### Changes
-${rows.join("\n")}
-${more}`);
-  }
-  const CLAIM_SECTIONS = [
-    { kind: "decision", heading: "Decisions" },
-    { kind: "assumption", heading: "Assumptions" },
-    { kind: "open_item", heading: "Open items" }
-  ];
-  for (const { kind, heading } of CLAIM_SECTIONS) {
-    const items = log.decisions.filter((d) => d.kind === kind);
-    if (items.length === 0) continue;
-    const lines = items.map((d) => {
-      const label = d.confidence === "confirmed_by_human" ? " *(confirmed by a human)*" : " *(stated)*";
-      return `- ${d.text}${label}`;
-    });
-    sections.push(`
-### ${heading}
-${lines.join("\n")}
-`);
-  }
   const footer = `
-<sub>Redaction: ${log.redaction.hits} rule(s) applied.</sub>
+<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool}) \xB7 Redaction: ${count2(log.redaction.hits, "rule")} applied.</sub>
 ${MARKER_END}
 `;
-  let body = header + blurb + sections.join("") + footer;
-  if (body.length <= max) return body;
-  const note = `
-*Log truncated to fit the PR body budget.*
-`;
-  const kept = [];
-  for (const s of sections) {
-    const candidate = header + blurb + [...kept, s].join("") + note + footer;
-    if (candidate.length > max) break;
-    kept.push(s);
+  const look = lookHere(log);
+  const confirmed = log.decisions.filter((d) => d.confidence === "confirmed_by_human").map((d) => `- ${d.text}`);
+  const visible = [`
+${checksLine(log)}
+${contextLine(log)}
+`];
+  if (confirmed.length > 0) visible.push(`
+### Decisions you confirmed
+${capped(confirmed).join("\n")}
+`);
+  if (look.length > 0) visible.push(`
+### Look here
+${capped(look).join("\n")}
+`);
+  if (log.scope) visible.push(`
+### Scope
+${scopeLines(log.scope).join("\n")}
+`);
+  const full = header + visible.join("") + details(log, look.slice(VISIBLE_ITEMS), confirmed.slice(VISIBLE_ITEMS)) + footer;
+  if (full.length <= max) return full;
+  const note = "\n*Log truncated to fit the PR body budget; details omitted.*\n";
+  for (let keep = visible.length; keep >= 1; keep--) {
+    const body = header + visible.slice(0, keep).join("") + note + footer;
+    if (body.length <= max) return body;
   }
-  body = header + blurb + kept.join("") + note + footer;
-  if (body.length <= max) return body;
-  const minimal = header + note + footer;
+  const minimal = header + `
+${checksLine(log)}
+` + note + MARKER_END + "\n";
   if (minimal.length <= max) return minimal;
   return `${header.slice(0, Math.max(0, max - MARKER_END.length - 1))}
 ${MARKER_END}
@@ -1648,12 +1714,12 @@ function defaultBase(cwd = process.cwd()) {
   const r = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
   return r.ok ? r.out.trim().replace(/^origin\//, "") || "main" : "main";
 }
-function notIgnoredIn(cwd, paths) {
-  if (paths.length === 0) return [];
-  const p = spawnSync2("git", ["check-ignore", "--stdin"], { cwd, input: paths.join("\n"), encoding: "utf8" });
-  if (p.status !== 0 && p.status !== 1) return paths;
+function notIgnoredIn(cwd, paths2) {
+  if (paths2.length === 0) return [];
+  const p = spawnSync2("git", ["check-ignore", "--stdin"], { cwd, input: paths2.join("\n"), encoding: "utf8" });
+  if (p.status !== 0 && p.status !== 1) return paths2;
   const ignored = new Set((p.stdout ?? "").split("\n").filter(Boolean));
-  return paths.filter((x) => !ignored.has(x));
+  return paths2.filter((x) => !ignored.has(x));
 }
 
 // src/events/branch.ts
@@ -2352,7 +2418,7 @@ function logMeta(place, base) {
     diff: diffAgainst(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
-    notIgnored: (paths) => notIgnoredIn(place.repo, paths)
+    notIgnored: (paths2) => notIgnoredIn(place.repo, paths2)
   };
 }
 function decisionsIn(transcript) {
