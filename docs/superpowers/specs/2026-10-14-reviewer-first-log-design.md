@@ -36,6 +36,7 @@ From the research pass of 2026-10-14 (sources fetched through summaries, not rea
 - **No remote CI polling.** GitHub's merge box shows CI; polling would add a network call per turn.
 - **No task-list checkboxes.** Ticks are body edits that the next publish would overwrite, and every flag would read as a mandatory chore.
 - **No narrative prose.** Phase detection would be guesswork, and fluent text reads as model self-report.
+- **Prompts stay available locally.** `pdl show` prints the session's prompts beside the timeline, labelled as never published, so the author can check what was asked. Nothing about them reaches GitHub.
 
 ## 5. The layout
 
@@ -121,7 +122,7 @@ Diff notes (`EXPECTATION_LOOSENED`, uncorroborated removals) are informational a
 - `+added −removed lines · N files (A added, D deleted, R renamed)` from the diff.
 - **Areas**: each changed path's first segment, or first two when the first is a monorepo container (`apps`, `packages`, `services`, `libs`, `crates`, `cmd`, `internal`); at most six, by lines changed, then `+N more`.
 - `Tests: N files changed (M added)`, using the existing `isTestFile`.
-- **Largest**: the two files with the most changed lines, excluding lockfiles and files git marks as generated or binary.
+- **Largest**: the two files with the most changed lines (added plus removed), shown as `` `path` (N lines) ``, excluding lockfiles, binary files, and paths that are conventionally generated (`*.min.js`, `*.min.css`, anything under `dist/`, `build/` or `vendor/`). Git itself does not mark files as generated, so this is a path rule.
 
 ### 6.6 Details (collapsed)
 
