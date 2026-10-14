@@ -47,8 +47,8 @@ test('two questions answered in one call become two decisions', () => {
     ...ASK,
     input: {
       questions: [
-        { question: 'Which base?', header: 'Base', options: [] },
-        { question: 'Squash?', header: 'Squash', options: [] },
+        { question: 'Which base?', header: 'Base', options: [{ label: 'main' }, { label: 'develop' }] },
+        { question: 'Squash?', header: 'Squash', options: [{ label: 'Yes' }, { label: 'No' }] },
       ],
     },
   };
@@ -63,8 +63,9 @@ test('two questions answered in one call become two decisions', () => {
 });
 
 test('an answer containing a comma is not split into two decisions', () => {
+  const withComma = { ...ASK, input: { questions: [{ ...ASK.input.questions[0], options: [{ label: 'Merge, then tag a release' }, { label: 'Keep PR open' }] }] } };
   const decisions = extractDecisions([
-    assistant([ASK]),
+    assistant([withComma]),
     answer('Your questions have been answered: "What would you like to do?"="Merge, then tag a release". Continue.'),
   ]);
 
@@ -83,4 +84,51 @@ test('the decision carries the time it was confirmed', () => {
 
 test('a transcript with no questions yields nothing', () => {
   assert.deepEqual(extractDecisions([assistant([{ type: 'text', text: 'just talking' }])]), []);
+});
+
+// An answer is published only when it is one of the options the question
+// offered. "Other" lets the human type anything, and that text was published
+// verbatim: the one place the log could carry words the human typed.
+
+test('a free-text answer is recorded as answered, without its text', () => {
+  const decisions = extractDecisions([
+    assistant([ASK]),
+    answer('Your questions have been answered: "What would you like to do?"="ask Dana at acme-corp first, the prod DB is fragile". Continue.'),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0]?.text, 'Integration: answered in the session');
+  assert.doesNotMatch(JSON.stringify(decisions), /Dana|acme|prod DB/);
+});
+
+test('a multi-select answer of offered options is published', () => {
+  const multi = { ...ASK, input: { questions: [{ question: 'Which checks?', header: 'Checks', multiSelect: true,
+    options: [{ label: 'Lint' }, { label: 'Unit, fast' }, { label: 'E2E' }] }] } };
+
+  const decisions = extractDecisions([
+    assistant([multi]),
+    answer('Your questions have been answered: "Which checks?"="Lint, Unit, fast, E2E". Continue.'),
+  ]);
+
+  assert.equal(decisions[0]?.text, 'Checks: Lint, Unit, fast, E2E');
+});
+
+test('a multi-select answer with a typed entry among the options is withheld whole', () => {
+  const multi = { ...ASK, input: { questions: [{ question: 'Which checks?', header: 'Checks', multiSelect: true,
+    options: [{ label: 'Lint' }, { label: 'E2E' }] }] } };
+
+  const decisions = extractDecisions([
+    assistant([multi]),
+    answer('Your questions have been answered: "Which checks?"="Lint, my private staging check". Continue.'),
+  ]);
+
+  assert.equal(decisions[0]?.text, 'Checks: answered in the session');
+});
+
+test('a question with no offered options never publishes its answer', () => {
+  const open = { ...ASK, input: { questions: [{ question: 'Anything else?', header: 'Notes' }] } };
+
+  const decisions = extractDecisions([assistant([open]), answer('Your questions have been answered: "Anything else?"="no". Continue.')]);
+
+  assert.equal(decisions[0]?.text, 'Notes: answered in the session');
 });

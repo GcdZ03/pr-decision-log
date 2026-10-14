@@ -71,6 +71,7 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 | Repo-relative file paths, from the PR diff | Absolute paths |
 | Assertion counts before and after | File contents or diffs |
 | Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
+| Your answers to the agent's questions, when you picked an offered option | Answers you typed yourself ("Other"): shown only as *answered in the session* |
 
 Enforcement is structural, not a regex pass at the end: the log builder is an allowlist, so anything the renderer can see has already been through it. A test plants an AWS-shaped key in command output and asserts it cannot appear in the serialized log.
 
