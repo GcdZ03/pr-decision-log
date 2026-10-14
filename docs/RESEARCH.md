@@ -173,7 +173,7 @@ Facts that shape the design:
 
 From reading 10 transcripts on this machine (Claude Code 2.1.239-2.1.252). Undocumented and subject to change; treat the hook payloads as the primary source and the transcript as a secondary, best-effort source.
 
-Location: `~/.claude/projects/<cwd with "/" replaced by "-">/<session_id>.jsonl`, e.g. `~/.claude/projects/-Users-geraldchang-Documents-Github-CreativeNotch/46c0f487-....jsonl`. The same path arrives as `transcript_path` in every hook payload, so you never need to derive it. Where subagent transcripts live is **unverified** (all sampled records had `isSidechain: false`).
+Location: `~/.claude/projects/<cwd with "/" replaced by "-">/<session_id>.jsonl`, e.g. `~/.claude/projects/-Users-<name>-Documents-Github-<repo>/46c0f487-....jsonl`. The same path arrives as `transcript_path` in every hook payload, so you never need to derive it. Where subagent transcripts live is **unverified** (all sampled records had `isSidechain: false`).
 
 One JSON object per line. Top-level `type` values seen and their counts in one 200-line file: `assistant` 63, `attachment` 41, `user` 31, `system` 16, plus small bookkeeping records `last-prompt`, `mode`, `permission-mode`, `atis-latch`, `ai-title`, `file-history-snapshot`.
 

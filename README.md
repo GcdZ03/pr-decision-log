@@ -69,7 +69,7 @@ Auto-fixes: `uv run ruff check --fix .`
 <!-- pdl:end -->
 ```
 
-When the session contains them, **Decisions**, **Assumptions** and **Open items** sections follow: questions you answered, marked *(confirmed by a human)*, and sentences where the agent explained a choice, marked *(stated)*. On most pull requests there are none, and the sections are left out rather than shown empty.
+Questions you answered appear under **Decisions you confirmed**, showing only the option you picked; an answer you typed yourself shows as *answered in the session*. Sentences where the agent explained a choice, its assumptions and its open items are listed inside the collapsed details, labelled *(stated)*. Both are left out when there are none, which is the common case.
 
 ## The finding that shaped it
 
@@ -83,7 +83,7 @@ Measured over 50 real Claude Code sessions on this machine:
 | Does the agent explain *why* before editing? | **Rarely.** 26 of 881 edits (3%), median 0 per session. |
 | Is the evidence timeline there? | **Yes.** Commands 50/50 sessions, test runs 48/50. |
 
-So the product leads with evidence, and an empty Decisions section is the expected case rather than a bug. A tool that promised "the agent's reasoning" would have shipped an empty section on 49 of 50 pull requests.
+So the product leads with evidence, and an empty decisions block is the expected case rather than a bug. A tool that promised "the agent's reasoning" would have shipped an empty section on 49 of 50 pull requests.
 
 A second measurement, over 23 sessions, revised it again: the single richest source of genuine decisions is not the agent's prose at all, but **questions the human answered** — 98 of them, each one a point where a person actually committed to something.
 
@@ -104,7 +104,7 @@ Enforcement is structural, not a regex pass at the end: the log builder is an al
 
 The runner fragment is an allowlist too. Heredoc bodies and quoted strings are emptied before a command is read at all, since agents write files with `cat > f <<'EOF'` and pass PR bodies as quoted arguments; an earlier version once published a test file's `import` line as the command that ran. The runner must be the command itself (`cat > vitest.config.ts` runs `cat`), and its arguments are kept only while they are plain words: the first absolute path, variable, quote or redirect ends the fragment. Commands are classified when the log is built, so logs built from events recorded by an older version are corrected too.
 
-**Changes come from the PR diff**, so a file the agent wrote from the shell is listed like any other, with its status (added, deleted, renamed). Counts of the agent's own edit-tool edits are added where they exist, and an edited file the diff does not contain is marked *not in diff* (uncommitted, or reverted). Past 30 files the list says how many more.
+**The file list comes from the PR diff** and sits inside the collapsed details, so a file the agent wrote from the shell is listed like any other, with its status (added, deleted, renamed). The visible Scope block summarises size, areas, test files and the largest files. Counts of the agent's own edit-tool edits are added where they exist. A shell-only file the diff does not contain is left out of the list, and is counted under "Written during the session but not in the diff" when git does not ignore it. Past 100 files the list says how many more.
 
 **Files written from the shell count as edits.** Across the stored sessions, 73% of file writes went through the shell (`cat > f <<'EOF'`, `sed -i`, a Python or Node script) rather than the edit tools, including 36 of 51 writes to test files, and the test-edit flag saw none of them. pdl now reads the files a command writes from its text when it is recorded: redirects, `tee`, `sed -i`, `cp` and `mv` destinations, and files a heredoc script opens for writing, through a literal or a variable assigned one. Only paths and assertion counts are stored. An append never raises the flag, and a file only ever written from the shell that the diff does not contain (a log, a scratch file) is left out of Changes. In a planted run where an agent was told to make a failing test pass using only `sed -i`, 0.1.4 raised nothing and 0.1.5 raises `TEST_EDITED_AFTER_FAILURE`. Over the stored sessions it adds three flags: one where an agent changed a test's expected value after it failed, which is the point, and two where a script only added `# noqa` comments, which it cannot tell apart, since what a script wrote is not known.
 
@@ -293,7 +293,7 @@ If pdl is registered twice — user and project settings, or plugin and `init` �
 
 ## Limitations, honestly
 
-- **The Decisions section is usually empty.** That is the measured reality, not a defect. It is suppressed rather than rendered as "none recorded".
+- **Decisions you confirmed is usually absent.** That is the measured reality, not a defect. It is suppressed rather than rendered as "none recorded".
 - **Stated decisions run about two useful items in three.** The agent's prose uses rationale words rhetorically ("verify X rather than guess"). A narration filter removes most of it; the `(stated)` label carries the rest.
 - **Plan-mode extraction is not implemented.** Zero `ExitPlanMode` uses exist across 170+ transcripts here, so there is no sample to build against. Guessing at the schema is how the spike got three things wrong once already.
 - **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.
