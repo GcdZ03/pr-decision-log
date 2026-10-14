@@ -73,3 +73,49 @@ test('fixers are summarised but never count toward a tool status', () => {
   assert.equal(checks[0]?.fixer, true);
   assert.deepEqual(toolStatuses(checks), []);
 });
+
+test('-w means workspace/watch for most tools, not a fixer flag', () => {
+  // -w is a fixer flag only for gofmt
+  assert.equal(isFixer('gofmt -w .'), true);
+  // For other tools, -w means workspace or watch, not write
+  assert.equal(isFixer('pnpm -w test'), false);
+  assert.equal(isFixer('tsc -w'), false);
+  assert.equal(isFixer('vitest -w'), false);
+  assert.equal(isFixer('npm test -w pkg'), false);
+  // But --write and --fix still work for any tool
+  assert.equal(isFixer('prettier --write file.js'), true);
+  assert.equal(isFixer('ruff check --fix .'), true);
+});
+
+test('formatters are only matched at the tool position, not in filenames', () => {
+  // pytest tests/black/ should not be treated as a fixer (black is just a path)
+  assert.equal(isFixer('uv run pytest tests/black/'), false);
+  // But actual formatters should still work
+  assert.equal(isFixer('black src'), true);
+  assert.equal(isFixer('uv run ruff format .'), true);
+  assert.equal(isFixer('cargo fmt'), true);
+  assert.equal(isFixer('rustfmt --check'), false); // but --check negates it
+  assert.equal(isFixer('gofmt -w .'), true);
+});
+
+test('toolOf handles option values and special cases correctly', () => {
+  const cases: [string, string][] = [
+    // docker with -f/-p options
+    ['docker compose -f a.yml build web', 'docker compose build'],
+    ['docker compose --file a.yml build web', 'docker compose build'],
+    ['docker compose -p proj build web', 'docker compose build'],
+    ['docker compose --project-name proj build web', 'docker compose build'],
+    // docker-compose as one word
+    ['docker-compose build web', 'docker compose build'],
+    // npm/pnpm with -w option (workspace)
+    ['npm run -w pkg test', 'npm test'],
+    ['pnpm run -w @pkg/name typecheck', 'pnpm typecheck'],
+    // yarn workspace
+    ['yarn workspace web test', 'yarn test'],
+    ['yarn workspace @org/pkg run lint', 'yarn lint'],
+    // cargo +toolchain
+    ['cargo +nightly test', 'cargo test'],
+    ['cargo +stable clippy', 'cargo clippy'],
+  ];
+  for (const [fragment, tool] of cases) assert.equal(toolOf(fragment), tool, fragment);
+});

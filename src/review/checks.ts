@@ -19,13 +19,30 @@ export type Check = {
 
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
 /** Package-manager options that take a value, so the value is not mistaken for the script. */
-const OPTION_WITH_VALUE = new Set(['--filter', '-F', '--dir', '-C', '--prefix', '--workspace', '--cwd']);
+const OPTION_WITH_VALUE = new Set(['--filter', '-F', '--dir', '-C', '--prefix', '--workspace', '--cwd', '-w']);
 const TASK_RUNNERS = new Set(['just', 'make', 'task']);
 const SUBCOMMAND_TOOLS = new Set(['go', 'cargo', 'swift', 'dotnet', 'playwright']);
 
 export function toolOf(fragment: string): string {
-  const words = withoutWrapper(fragment).split(/\s+/).filter(Boolean);
-  const first = words[0] ?? '';
+  let words = withoutWrapper(fragment).split(/\s+/).filter(Boolean);
+  let first = words[0] ?? '';
+
+  // Handle docker-compose as docker compose
+  if (first === 'docker-compose') {
+    first = 'docker';
+    words = ['docker', 'compose', ...words.slice(1)];
+  }
+
+  // Handle yarn workspace <name> <command> (before general package manager check)
+  if (first === 'yarn' && words[1] === 'workspace' && words[2]) {
+    for (let i = 3; i < words.length; i++) {
+      const w = words[i]!;
+      if (OPTION_WITH_VALUE.has(w)) { i++; continue; }
+      if (w.startsWith('-') || w === 'run') continue;
+      return `yarn ${w}`;
+    }
+    return 'yarn';
+  }
 
   if (PACKAGE_MANAGERS.has(first)) {
     for (let i = 1; i < words.length; i++) {
@@ -36,23 +53,55 @@ export function toolOf(fragment: string): string {
     }
     return first;
   }
+
   if (TASK_RUNNERS.has(first)) return words[1] && !words[1].startsWith('-') ? `${first} ${words[1]}` : first;
   if (first === 'node' && words[1] === '--test') return 'node --test';
-  if (first === 'docker') {
-    const rest = words.slice(1).filter((w) => !w.startsWith('-'));
-    return ['docker', ...rest.slice(0, rest[0] === 'build' ? 1 : 2)].join(' ');
+
+  // Handle cargo +toolchain
+  if (first === 'cargo' && words[1]?.startsWith('+')) {
+    for (let i = 2; i < words.length; i++) {
+      const w = words[i]!;
+      if (OPTION_WITH_VALUE.has(w)) { i++; continue; }
+      if (w.startsWith('-') || w === 'run') continue;
+      return `cargo ${w}`;
+    }
+    return 'cargo';
   }
+
+  if (first === 'docker') {
+    const optionsWithValue = new Set(['-f', '--file', '-p', '--project-name']);
+    const filtered: string[] = [];
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i]!;
+      if (optionsWithValue.has(w)) { i++; continue; }
+      if (w.startsWith('-')) continue;
+      filtered.push(w);
+    }
+    return ['docker', ...filtered.slice(0, filtered[0] === 'build' ? 1 : 2)].join(' ');
+  }
+
   if (SUBCOMMAND_TOOLS.has(first) && words[1] && !words[1].startsWith('-')) return `${first} ${words[1]}`;
   return first;
 }
 
-const FORMATTERS = /\b(?:ruff\s+format|cargo\s+fmt|black|rustfmt|swiftformat|gofmt)\b/;
-
 export function isFixer(fragment: string): boolean {
   const words = fragment.split(/\s+/);
+
+  // --check and --diff mean "not a fixer"
   if (words.includes('--check') || words.includes('--diff')) return false;
-  if (words.some((w) => w === '--fix' || w === '--write' || w === '-w' || w.startsWith('--fix='))) return true;
-  return FORMATTERS.test(fragment);
+
+  // --write, --fix, --fix=* are always fixers
+  if (words.some((w) => w === '--write' || w === '--fix' || w.startsWith('--fix='))) return true;
+
+  // -w is only a fixer for gofmt, otherwise it's workspace/watch
+  const tool = toolOf(fragment);
+  if (words.includes('-w') && tool === 'gofmt') return true;
+
+  // Check if tool is a formatter
+  if (tool === 'cargo fmt' || tool === 'black' || tool === 'rustfmt' || tool === 'swiftformat' || tool === 'gofmt') return true;
+  if (tool === 'ruff' && withoutWrapper(fragment).startsWith('ruff format')) return true;
+
+  return false;
 }
 
 /**
