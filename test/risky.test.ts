@@ -34,3 +34,15 @@ test('lockfiles and migrations are recognised on their own', () => {
   assert.equal(isMigration('db/migrate/20260101_add.rb'), true);
   assert.equal(isMigration('src/migrate.ts'), false);
 });
+
+test('documentation files in migration directories are not migrations', () => {
+  assert.equal(isMigration('migrations/README.md'), false);
+  assert.equal(isMigration('db/migrate/guide.txt'), false);
+  assert.equal(isMigration('alembic/versions/notes.rst'), false);
+  assert.equal(isMigration('prisma/migrations/example.sample'), false);
+});
+
+test('documentation files do not appear in riskyFiles', () => {
+  assert.deepEqual(riskyFiles(['migrations/README.md']), []);
+  assert.deepEqual(riskyFiles(['docs/migrations/guide.md']), []);
+});

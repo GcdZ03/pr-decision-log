@@ -18,7 +18,8 @@ const LOCKFILES = new Set([
 export const isLockfile = (path: string): boolean => LOCKFILES.has(basename(path));
 
 export const isMigration = (path: string): boolean =>
-  /(^|\/)(?:migrations|alembic\/versions|prisma\/migrations|db\/migrate)\//.test(path);
+  /(^|\/)(?:migrations|alembic\/versions|prisma\/migrations|db\/migrate)\//.test(path) &&
+  !/\.(?:md|txt|rst|example|sample)$/.test(path);
 
 const AUTH_SEGMENT = /^(?:auth|authn|authz|security|permissions|iam)$/;
 

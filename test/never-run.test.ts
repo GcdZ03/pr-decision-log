@@ -30,3 +30,26 @@ test('a Dockerfile only mentioned in a heredoc or an echo is not a build', () =>
 test('nothing matching means nothing reported', () => {
   assert.deepEqual(neverRun(['src/a.ts', 'README.md'], []), []);
 });
+
+test('documentation files do not trigger docker build or migrations checks', () => {
+  assert.deepEqual(neverRun(['docs/migrations/guide.md'], ['pnpm test']), []);
+  assert.deepEqual(neverRun(['migrations/README.md'], ['pnpm test']), []);
+  assert.deepEqual(neverRun(['Dockerfile.md'], ['pnpm test']), []);
+  assert.deepEqual(neverRun(['docs/Dockerfile.example'], ['pnpm test']), []);
+  assert.deepEqual(neverRun(['composer.yml'], ['pnpm test']), []);
+  assert.deepEqual(neverRun(['composer.json'], ['pnpm test']), []);
+});
+
+test('additional docker build forms satisfy the rule', () => {
+  for (const c of ['docker compose -f f.yml build', 'docker-compose build web', 'docker compose up --build', 'docker image build .']) {
+    assert.deepEqual(neverRun(['Dockerfile'], [c]), [], c);
+  }
+});
+
+test('additional migration forms satisfy the rule', () => {
+  const paths = ['services/api/migrations/versions/0004_imports.py'];
+
+  for (const c of ['docker compose run --rm api alembic upgrade head', 'docker compose exec web python manage.py migrate', './manage.py migrate', 'bin/rails db:migrate', 'pnpm prisma migrate dev', 'alembic -c alembic.ini upgrade head']) {
+    assert.deepEqual(neverRun(paths, [c]), [], c);
+  }
+});
