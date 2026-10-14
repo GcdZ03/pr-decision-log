@@ -1995,6 +1995,17 @@ function toolResults(entry) {
     text: typeof b.content === "string" ? b.content : Array.isArray(b.content) ? b.content.map((c) => c.text ?? "").join("\n") : ""
   }));
 }
+function userPrompts(entries) {
+  const out = [];
+  for (const e of entries) {
+    if (e.type !== "user" || e.isMeta || e.isSidechain) continue;
+    const c = e.message?.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) && c.every((b) => b.type === "text") ? c.map((b) => b.text ?? "").join("\n") : "";
+    if (!text.trim() || text.trimStart().startsWith("<")) continue;
+    out.push({ ...e.timestamp ? { at: e.timestamp } : {}, text });
+  }
+  return out;
+}
 
 // src/extract/decisions.ts
 var MARKERS2 = [
@@ -2629,9 +2640,20 @@ function printTimeline(label, recorded) {
       ${f.detail}
 `);
 }
+function printPrompts(transcripts) {
+  const prompts = transcripts.flatMap((t) => t ? userPrompts(readTranscript(t)) : []);
+  if (prompts.length === 0) return;
+  process.stdout.write("\n  Prompts (local only, never published):\n");
+  for (const p of prompts) {
+    const first = p.text.split("\n")[0]?.slice(0, 120) ?? "";
+    process.stdout.write(`  ${p.at ? /T(\d{2}:\d{2})/.exec(p.at)?.[1] ?? "" : "     "}  ${first}
+`);
+  }
+}
 function show(store2, sessionId) {
   if (sessionId) {
     printTimeline(`session ${sessionId}`, store2.read(sessionId));
+    printPrompts([findTranscript(sessionId)]);
     return;
   }
   const branch = currentBranch();
@@ -2643,6 +2665,7 @@ function show(store2, sessionId) {
   const merged = eventsForBranch(store2, repoRoot(), branch);
   const n = merged.sessions.length;
   printTimeline(`branch ${branch} (${n} session${n === 1 ? "" : "s"})`, merged.events);
+  printPrompts(merged.sessions.map((s) => merged.transcripts.get(s) ?? findTranscript(s)));
 }
 var fmtTime = (ms) => {
   const d = new Date(ms);

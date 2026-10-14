@@ -13,7 +13,7 @@ import type { TimelineEvent } from './events/types.ts';
 import { isDisabled } from './events/handle-hook.ts';
 import { detectPrCreation } from './publish/detect-pr.ts';
 import { diagnose, worstStatus, type Facts } from './doctor/diagnose.ts';
-import { readTranscript } from './extract/transcript.ts';
+import { readTranscript, userPrompts } from './extract/transcript.ts';
 import { extractDecisions, type Decision } from './extract/decisions.ts';
 import { findTranscript } from './extract/find-transcript.ts';
 import { mergeHooks, pdlHookEvents, removeHooks } from './doctor/init.ts';
@@ -337,10 +337,22 @@ function printTimeline(label: string, recorded: TimelineEvent[]): void {
   for (const f of flags) process.stdout.write(`  - ${f.code} ${f.file}\n      ${f.detail}\n`);
 }
 
+/** The human's prompts beside the timeline, for the author's eyes only. */
+function printPrompts(transcripts: (string | undefined)[]): void {
+  const prompts = transcripts.flatMap((t) => (t ? userPrompts(readTranscript(t)) : []));
+  if (prompts.length === 0) return;
+  process.stdout.write('\n  Prompts (local only, never published):\n');
+  for (const p of prompts) {
+    const first = p.text.split('\n')[0]?.slice(0, 120) ?? '';
+    process.stdout.write(`  ${p.at ? /T(\d{2}:\d{2})/.exec(p.at)?.[1] ?? '' : '     '}  ${first}\n`);
+  }
+}
+
 /** One session's timeline, or with no argument the current branch's, merged across sessions like `build`. */
 function show(store: EventStore, sessionId: string | undefined): void {
   if (sessionId) {
     printTimeline(`session ${sessionId}`, store.read(sessionId));
+    printPrompts([findTranscript(sessionId)]);
     return;
   }
   const branch = currentBranch();
@@ -352,6 +364,7 @@ function show(store: EventStore, sessionId: string | undefined): void {
   const merged = eventsForBranch(store, repoRoot(), branch);
   const n = merged.sessions.length;
   printTimeline(`branch ${branch} (${n} session${n === 1 ? '' : 's'})`, merged.events);
+  printPrompts(merged.sessions.map((s) => merged.transcripts.get(s) ?? findTranscript(s)));
 }
 
 const fmtTime = (ms: number): string => {

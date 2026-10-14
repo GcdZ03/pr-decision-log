@@ -16,6 +16,7 @@ export type TranscriptEntry = {
   requestId?: string;
   uuid?: string;
   isSidechain?: boolean;
+  isMeta?: boolean;
   gitBranch?: string;
   message?: { role?: string; content?: unknown };
 };
@@ -86,4 +87,25 @@ export function toolResults(entry: TranscriptEntry): { id: string; text: string 
           ? (b.content as ContentBlock[]).map((c) => c.text ?? '').join('\n')
           : '',
     }));
+}
+
+/**
+ * What the human typed, for `pdl show` only. Never published: the log's
+ * rule is that nothing the human wrote reaches GitHub. Tool results, meta
+ * entries, slash-command wrappers and subagent prompts are not prompts.
+ */
+export function userPrompts(entries: TranscriptEntry[]): { at?: string; text: string }[] {
+  const out: { at?: string; text: string }[] = [];
+  for (const e of entries) {
+    if (e.type !== 'user' || e.isMeta || e.isSidechain) continue;
+    const c = e.message?.content;
+    const text = typeof c === 'string'
+      ? c
+      : Array.isArray(c) && c.every((b) => (b as ContentBlock).type === 'text')
+        ? c.map((b) => (b as ContentBlock).text ?? '').join('\n')
+        : '';
+    if (!text.trim() || text.trimStart().startsWith('<')) continue;
+    out.push({ ...(e.timestamp ? { at: e.timestamp } : {}), text });
+  }
+  return out;
 }
