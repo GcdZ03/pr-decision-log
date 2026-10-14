@@ -210,6 +210,9 @@ var RUNNER_KINDS = {
 };
 var LAUNCHER_RE = /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|timeout\s+\S+|time|env|nice|exec|command)\s+)+/;
 var WRAPPER_RE = /^(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+(?:exec|dlx)|uv\s+run|poetry\s+run|pipenv\s+run|bundle\s+exec|python3?\s+-m)(?:\s+--?[\w-]+)*\s+/;
+function withoutWrapper(fragment2) {
+  return fragment2.replace(LAUNCHER_RE, "").replace(WRAPPER_RE, "");
+}
 function runsKind(segment, re) {
   const head = segment.replace(LAUNCHER_RE, "");
   const anchored = new RegExp(`^(?:${re.source})`);
@@ -829,8 +832,217 @@ function expandWrites(events) {
   });
 }
 
-// src/flags/diff-signals.ts
+// src/review/checks.ts
+var PACKAGE_MANAGERS = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
+var OPTION_WITH_VALUE = /* @__PURE__ */ new Set(["--filter", "-F", "--dir", "-C", "--prefix", "--workspace", "--cwd"]);
+var TASK_RUNNERS = /* @__PURE__ */ new Set(["just", "make", "task"]);
+var SUBCOMMAND_TOOLS = /* @__PURE__ */ new Set(["go", "cargo", "swift", "dotnet", "playwright"]);
+function takesValue(word, packageManager) {
+  if (OPTION_WITH_VALUE.has(word)) return true;
+  if (word === "-w" && packageManager === "npm") return true;
+  return false;
+}
+function toolOf(fragment2) {
+  let words = withoutWrapper(fragment2).split(/\s+/).filter(Boolean);
+  let first = words[0] ?? "";
+  if (first === "docker-compose") {
+    first = "docker";
+    words = ["docker", "compose", ...words.slice(1)];
+  }
+  if (first === "yarn" && words[1] === "workspace" && words[2]) {
+    for (let i = 3; i < words.length; i++) {
+      const w = words[i];
+      if (takesValue(w, "yarn")) {
+        i++;
+        continue;
+      }
+      if (w.startsWith("-") || w === "run") continue;
+      return `yarn ${w}`;
+    }
+    return "yarn";
+  }
+  if (PACKAGE_MANAGERS.has(first)) {
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i];
+      if (takesValue(w, first)) {
+        i++;
+        continue;
+      }
+      if (w.startsWith("-") || w === "run") continue;
+      return `${first} ${w}`;
+    }
+    return first;
+  }
+  if (TASK_RUNNERS.has(first)) return words[1] && !words[1].startsWith("-") ? `${first} ${words[1]}` : first;
+  if (first === "node" && words[1] === "--test") return "node --test";
+  if (first === "cargo" && words[1]?.startsWith("+")) {
+    for (let i = 2; i < words.length; i++) {
+      const w = words[i];
+      if (takesValue(w, "cargo")) {
+        i++;
+        continue;
+      }
+      if (w.startsWith("-") || w === "run") continue;
+      return `cargo ${w}`;
+    }
+    return "cargo";
+  }
+  if (first === "docker") {
+    const optionsWithValue = /* @__PURE__ */ new Set(["-f", "--file", "-p", "--project-name"]);
+    const filtered = [];
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i];
+      if (optionsWithValue.has(w)) {
+        i++;
+        continue;
+      }
+      if (w.startsWith("-")) continue;
+      filtered.push(w);
+    }
+    return ["docker", ...filtered.slice(0, filtered[0] === "build" ? 1 : 2)].join(" ");
+  }
+  if (SUBCOMMAND_TOOLS.has(first) && words[1] && !words[1].startsWith("-")) return `${first} ${words[1]}`;
+  return first;
+}
+function isFixer(fragment2) {
+  const words = fragment2.split(/\s+/);
+  if (words.includes("--check") || words.includes("--diff")) return false;
+  if (words.some((w) => w === "--write" || w === "--fix" || w.startsWith("--fix="))) return true;
+  const tool = toolOf(fragment2);
+  if (words.includes("-w") && tool === "gofmt") return true;
+  if (tool === "cargo fmt" || tool === "black" || tool === "rustfmt" || tool === "swiftformat" || tool === "gofmt") return true;
+  if (tool === "ruff" && withoutWrapper(fragment2).startsWith("ruff format")) return true;
+  return false;
+}
+function summariseChecks(events) {
+  const byCommand = /* @__PURE__ */ new Map();
+  for (const e of events) {
+    if (e.kind !== "command") continue;
+    const kind = classifyCommand(e.command);
+    if (kind !== "test" && kind !== "build" && kind !== "lint") continue;
+    const command2 = runnerFragment(e.command);
+    if (!command2) continue;
+    const failed = e.outcome === "fail" ? 1 : 0;
+    const seen = byCommand.get(command2);
+    if (seen) {
+      seen.runs += 1;
+      seen.failures += failed;
+      seen.last = e.outcome;
+      seen.lastAt = e.at;
+    } else {
+      byCommand.set(command2, {
+        command: command2,
+        kind,
+        tool: toolOf(command2),
+        runs: 1,
+        failures: failed,
+        last: e.outcome,
+        lastAt: e.at,
+        fixer: isFixer(command2)
+      });
+    }
+  }
+  return [...byCommand.values()];
+}
+
+// src/review/risky.ts
 import { basename as basename2 } from "node:path";
+var LOCKFILES = /* @__PURE__ */ new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "uv.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "Cargo.lock",
+  "go.sum",
+  "Gemfile.lock",
+  "Package.resolved"
+]);
+var isLockfile = (path) => LOCKFILES.has(basename2(path));
+var isMigration = (path) => /(^|\/)(?:migrations|alembic\/versions|prisma\/migrations|db\/migrate)\//.test(path) && !/\.(?:md|txt|rst|example|sample)$/.test(path);
+var AUTH_SEGMENT = /^(?:auth|authn|authz|security|permissions|iam)$/;
+var RULES2 = [
+  ["CI and automation", (p) => /^\.github\/(?:workflows|actions)\//.test(p) || p === ".gitlab-ci.yml" || p.startsWith(".circleci/")],
+  ["Ownership and policy", (p) => /^(?:\.github\/|docs\/)?CODEOWNERS$/.test(p) || /(^|\/)SECURITY\.md$/.test(p)],
+  ["Migrations", isMigration],
+  ["Dependencies", isLockfile],
+  ["Secrets and environment", (p) => /(^|\/)\.env(?:\.|$)/.test(p) && !/\.env\.(?:example|sample|template)$/.test(p) || /\.(?:pem|key)$/.test(p) || /(^|\/)secrets\//.test(p)],
+  // A segment, or a file's name without its extension: `auth/`, `auth.py`.
+  ["Auth", (p) => p.split("/").some((seg) => AUTH_SEGMENT.test(seg.replace(/\.[^.]+$/, "")))]
+];
+function riskyFiles(paths) {
+  const groups = [];
+  for (const path of paths) {
+    const rule = RULES2.find(([, matches]) => matches(path));
+    if (!rule) continue;
+    const group = groups.find((g) => g.category === rule[0]);
+    if (group) group.paths.push(path);
+    else groups.push({ category: rule[0], paths: [path] });
+  }
+  return RULES2.map(([c]) => groups.find((g) => g.category === c)).filter((g) => g !== void 0);
+}
+
+// src/review/never-run.ts
+var DOCKER_FILE = /(^|\/)(?:Dockerfile[^/]*|[^/]+\.dockerfile|docker-compose[^/]*\.ya?ml|compose[^/]*\.ya?ml)$/i;
+function isDockerFile(path) {
+  if (!/\.(?:md|txt|rst|example|sample)$/.test(path) === false) return false;
+  if (/composer\.\w+$/.test(path)) return false;
+  return DOCKER_FILE.test(path);
+}
+var NEVER_RUN_RULES = [
+  {
+    check: "docker build",
+    because: "a Docker file changed",
+    touches: isDockerFile,
+    satisfiedBy: /docker(?:-compose|\s+compose)?(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+(?:image\s+|buildx\s+)?build\b|docker(?:-compose|\s+compose)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+up\b.*--build/
+  },
+  {
+    check: "migrations",
+    because: "a migration changed",
+    touches: isMigration,
+    satisfiedBy: /(?:alembic(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+)?upgrade\b|(?:python3?\s+)?(?:\.\/)?(?:bin\/)?manage\.py\s+migrate\b|(?:bin\/)?rails\s+db:migrate\b|(?:pnpm\s+)?prisma\s+migrate\b|(?:just|make)\s+migrate\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:alembic(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+)?upgrade\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:python3?\s+)?(?:\.\/)?(?:bin\/)?manage\.py\s+migrate\b|docker\s+compose\s+(?:run|exec)(?:\s+-\S+(?:\s+[^\s-]\S*)?)*\s+\S+\s+(?:bin\/)?rails\s+db:migrate\b/
+  }
+];
+function neverRun(paths, commands) {
+  const segments = commands.flatMap(commandSegments);
+  return NEVER_RUN_RULES.filter((r) => paths.some(r.touches) && !segments.some((s) => runsKind(s, r.satisfiedBy))).map(({ check, because }) => ({ check, because }));
+}
+
+// src/review/scope.ts
+var CONTAINERS = /* @__PURE__ */ new Set(["apps", "packages", "services", "libs", "crates", "cmd", "internal"]);
+var GENERATED = /\.min\.(?:js|css)$|(^|\/)(?:dist|build|vendor)\//;
+var MAX_AREAS = 6;
+function areaOf(path) {
+  const segs = path.split("/");
+  if (segs.length === 1) return "(root)";
+  if (CONTAINERS.has(segs[0]) && segs.length > 2) return `${segs[0]}/${segs[1]}`;
+  return segs[0];
+}
+function summariseScope(files) {
+  const lines = (x) => x.added + x.removed;
+  const byArea = /* @__PURE__ */ new Map();
+  for (const x of files) byArea.set(areaOf(x.path), (byArea.get(areaOf(x.path)) ?? 0) + lines(x));
+  const ranked = [...byArea.entries()].sort((a, b) => b[1] - a[1]).map(([area]) => area);
+  const tests = files.filter((x) => isTestFile(x.path));
+  return {
+    added: files.reduce((n, x) => n + x.added, 0),
+    removed: files.reduce((n, x) => n + x.removed, 0),
+    files: files.length,
+    created: files.filter((x) => x.status === "added").length,
+    deleted: files.filter((x) => x.status === "deleted").length,
+    renamed: files.filter((x) => x.status === "renamed").length,
+    areas: ranked.slice(0, MAX_AREAS),
+    moreAreas: Math.max(0, ranked.length - MAX_AREAS),
+    testsChanged: tests.length,
+    testsAdded: tests.filter((x) => x.status === "added").length,
+    largest: files.filter((x) => !x.binary && !isLockfile(x.path) && !GENERATED.test(x.path) && lines(x) > 0).sort((a, b) => lines(b) - lines(a)).slice(0, 2).map((x) => ({ path: x.path, lines: lines(x) }))
+  };
+}
+
+// src/flags/diff-signals.ts
+import { basename as basename3 } from "node:path";
 function parse(diff) {
   const files = [];
   let current;
@@ -941,9 +1153,9 @@ function testDeleted(f) {
 var EXPECT_RE = /\b(?:toBe|toEqual|toStrictEqual|toMatchObject|assertEqual|assertEquals|XCTAssertEqual|assert\.(?:equal|strictEqual|deepEqual|deepStrictEqual))\s*\(/;
 var skeleton = (line) => line.replace(/(["'`])(?:\\.|(?!\1).)*\1/g, "S").replace(/\b\d+(?:\.\d+)?\b/g, "N").trim();
 function stemOf(path) {
-  return basename2(path).replace(/\.(?:test|spec)\.[cm]?[tj]sx?$/, "").replace(/^test_(.+)\.py$/, "$1").replace(/_test\.(?:go|py|rb)$/, "").replace(/Tests?\.(?:swift|java)$/, "");
+  return basename3(path).replace(/\.(?:test|spec)\.[cm]?[tj]sx?$/, "").replace(/^test_(.+)\.py$/, "$1").replace(/_test\.(?:go|py|rb)$/, "").replace(/Tests?\.(?:swift|java)$/, "");
 }
-var moduleName = (path) => basename2(path).replace(/\.[^.]+$/, "");
+var moduleName = (path) => basename3(path).replace(/\.[^.]+$/, "");
 var fragment = (line) => {
   const at = EXPECT_RE.exec(line)?.index ?? 0;
   const f = line.slice(at).trim().replace(/;$/, "");
@@ -1058,6 +1270,14 @@ function buildLog(recorded, meta, decisions = []) {
     // a log, a scratch file or build output, not part of the change.
     ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file) && !viaShellOnly.has(file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
   ] : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
+  const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
+  const present = fromDiff.filter((f) => f.status !== "deleted").map((f) => f.path);
+  const commandTexts = events.flatMap((e) => e.kind === "command" ? [e.command] : []);
+  const missing = fromDiff.length > 0 ? neverRun(present, commandTexts) : [];
+  const risky = riskyFiles(fromDiff.map((f) => f.path));
+  const scope = fromDiff.length > 0 ? summariseScope(fromDiff) : void 0;
+  const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
+  const strayWrites = fromDiff.length > 0 ? meta.notIgnored ? meta.notIgnored(unlisted) : unlisted : [];
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags = timeline.map((f) => ({
     ...f,
@@ -1090,6 +1310,11 @@ function buildLog(recorded, meta, decisions = []) {
     otherCommands,
     changes,
     flags,
+    checks,
+    neverRun: missing,
+    risky,
+    ...scope ? { scope } : {},
+    strayWrites,
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
     redaction: { hits: rules.size, rules: [...rules] }
@@ -1422,6 +1647,13 @@ function diffAgainst(base, cwd = process.cwd()) {
 function defaultBase(cwd = process.cwd()) {
   const r = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
   return r.ok ? r.out.trim().replace(/^origin\//, "") || "main" : "main";
+}
+function notIgnoredIn(cwd, paths) {
+  if (paths.length === 0) return [];
+  const p = spawnSync2("git", ["check-ignore", "--stdin"], { cwd, input: paths.join("\n"), encoding: "utf8" });
+  if (p.status !== 0 && p.status !== 1) return paths;
+  const ignored = new Set((p.stdout ?? "").split("\n").filter(Boolean));
+  return paths.filter((x) => !ignored.has(x));
 }
 
 // src/events/branch.ts
@@ -2119,7 +2351,8 @@ function logMeta(place, base) {
     repoRoot: place.repo,
     diff: diffAgainst(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
-    extraRedactions: compileExtraPatterns(config.redaction.extra_patterns)
+    extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
+    notIgnored: (paths) => notIgnoredIn(place.repo, paths)
   };
 }
 function decisionsIn(transcript) {

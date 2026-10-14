@@ -7,7 +7,7 @@ import { render } from './render/render.ts';
 import { publish } from './publish/publish.ts';
 import { autoPublish, FilePublishState } from './publish/auto-publish.ts';
 import { ghIn } from './publish/publish.ts';
-import { defaultBase, diffAgainst } from './publish/pr-diff.ts';
+import { defaultBase, diffAgainst, notIgnoredIn } from './publish/pr-diff.ts';
 import { eventsForBranch, placeOf, planTurn, selectForBranch, summariseSessions, type Place } from './events/branch.ts';
 import type { TimelineEvent } from './events/types.ts';
 import { isDisabled } from './events/handle-hook.ts';
@@ -91,6 +91,7 @@ function logMeta(place: Place, base: string) {
     diff: diffAgainst(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
+    notIgnored: (paths: string[]) => notIgnoredIn(place.repo, paths),
   };
 }
 

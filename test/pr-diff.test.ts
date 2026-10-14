@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { diffAgainst, defaultBase } from '../src/publish/pr-diff.ts';
+import { diffAgainst, defaultBase, notIgnoredIn } from '../src/publish/pr-diff.ts';
 
 /** main <- feat-a <- feat-b, pushed to a bare remote; feat-b is checked out. */
 function withStack(fn: (work: string) => void) {
@@ -63,4 +63,25 @@ test("the default base is the remote's default branch", () => {
   withStack((work) => {
     assert.equal(defaultBase(work), 'main');
   });
+});
+
+test('notIgnoredIn drops paths git ignores and keeps the rest', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdl-ignore-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    writeFileSync(join(dir, '.gitignore'), '*.log\nbuild/\n');
+    assert.deepEqual(notIgnoredIn(dir, ['a.log', 'build/x.js', 'src/a.ts', 'notes.md']), ['src/a.ts', 'notes.md']);
+    assert.deepEqual(notIgnoredIn(dir, []), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('outside a repository nothing is dropped, rather than guessing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdl-norepo-'));
+  try {
+    assert.deepEqual(notIgnoredIn(dir, ['a.log']), ['a.log']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

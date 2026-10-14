@@ -200,3 +200,37 @@ test('shell writes count toward files in the diff, and a scratch file the diff l
   assert.equal(log.changes.find((c) => c.file === 'src/api.ts')?.edits, 1);
   assert.ok(!log.changes.some((c) => c.file === 'out.log'));
 });
+
+const REVIEW_DIFF = [
+  'diff --git a/Dockerfile b/Dockerfile', '--- a/Dockerfile', '+++ b/Dockerfile', '@@ -1 +1 @@', '-FROM a', '+FROM b',
+  'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml', '--- a/.github/workflows/ci.yml', '+++ b/.github/workflows/ci.yml', '@@ -1 +1 @@', '-x', '+y',
+  'diff --git a/src/api.ts b/src/api.ts', '--- a/src/api.ts', '+++ b/src/api.ts', '@@ -1 +1,2 @@', '-a', '+b', '+c',
+].join('\n');
+
+test('the log carries checks, never-run gaps, risky files and scope from the diff', () => {
+  const log = buildLog([
+    { kind: 'command', id: 'c1', at: '2026-10-03T06:00:00Z', command: 'pnpm test 2>&1 | tail', classification: 'test', outcome: 'pass' },
+  ], { ...meta, repoRoot: '/repo', diff: REVIEW_DIFF });
+
+  assert.deepEqual(log.checks.map((c) => [c.command, c.tool, c.last]), [['pnpm test', 'pnpm test', 'pass']]);
+  assert.deepEqual(log.neverRun, [{ check: 'docker build', because: 'a Docker file changed' }]);
+  assert.deepEqual(log.risky, [{ category: 'CI and automation', paths: ['.github/workflows/ci.yml'] }]);
+  assert.equal(log.scope?.files, 3);
+  assert.equal(log.scope?.added, 4);
+});
+
+test('stray writes are in-repo writes the diff lacks, minus what git ignores', () => {
+  const log = buildLog([
+    writer('w1', 'x', [{ path: '/repo/src/api.ts' }, { path: '/repo/notes/todo.md' }, { path: '/repo/out.log' }, { path: '/tmp/scratch.txt' }]),
+  ], { ...meta, repoRoot: '/repo', diff: REVIEW_DIFF, notIgnored: (paths) => paths.filter((p) => !p.endsWith('.log')) });
+
+  assert.deepEqual(log.strayWrites, ['notes/todo.md']);
+});
+
+test('with no diff there is no scope, no never-run line and no stray list', () => {
+  const log = buildLog([edit('e1', 'src/a.ts')], meta);
+
+  assert.equal(log.scope, undefined);
+  assert.deepEqual(log.neverRun, []);
+  assert.deepEqual(log.strayWrites, []);
+});

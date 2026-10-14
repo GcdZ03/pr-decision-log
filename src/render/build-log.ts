@@ -8,6 +8,10 @@ import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
 import { classifyCommand } from '../events/classify-command.ts';
 import { expandWrites } from '../events/expand-writes.ts';
+import { summariseChecks, type Check } from '../review/checks.ts';
+import { neverRun, type NeverRun } from '../review/never-run.ts';
+import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
+import { summariseScope, type Scope } from '../review/scope.ts';
 import { analyzeDiff, changedFiles, type FileStatus } from '../flags/diff-signals.ts';
 
 export type Verification = {
@@ -40,6 +44,14 @@ export type DecisionLog = {
   otherCommands: number;
   changes: Change[];
   flags: Flag[];
+  /** One entry per distinct test, build or lint fragment; `verification` keeps every run. */
+  checks: Check[];
+  neverRun: NeverRun[];
+  risky: RiskyGroup[];
+  /** Absent when there is no diff to measure. */
+  scope?: Scope;
+  /** In-repo files written in the session that the diff lacks and git does not ignore. */
+  strayWrites: string[];
   /** Claims, kept in one list with a `kind` and split at render time. */
   decisions: Decision[];
   redaction: { hits: number; rules: string[] };
@@ -61,6 +73,8 @@ export type LogMeta = {
   flagEditAfterFailure?: boolean;
   /** From `redaction.extra_patterns`, applied on top of the built-in rules. */
   extraRedactions?: RedactionRule[];
+  /** Filters out paths git ignores; omitted, every path is kept. */
+  notIgnored?: (paths: string[]) => string[];
 };
 
 
@@ -139,6 +153,15 @@ export function buildLog(
       ]
     : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
 
+  const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
+  const present = fromDiff.filter((f) => f.status !== 'deleted').map((f) => f.path);
+  const commandTexts = events.flatMap((e) => (e.kind === 'command' ? [e.command] : []));
+  const missing = fromDiff.length > 0 ? neverRun(present, commandTexts) : [];
+  const risky = riskyFiles(fromDiff.map((f) => f.path));
+  const scope = fromDiff.length > 0 ? summariseScope(fromDiff) : undefined;
+  const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
+  const strayWrites = fromDiff.length > 0 ? (meta.notIgnored ? meta.notIgnored(unlisted) : unlisted) : [];
+
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags: Flag[] = timeline.map((f) => ({
     ...f,
@@ -178,6 +201,11 @@ export function buildLog(
     otherCommands,
     changes,
     flags,
+    checks,
+    neverRun: missing,
+    risky,
+    ...(scope ? { scope } : {}),
+    strayWrites,
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
     redaction: { hits: rules.size, rules: [...rules] },
