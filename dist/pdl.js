@@ -815,19 +815,26 @@ function relativize(path, repoRoot2) {
   }
   return basename(path);
 }
-var PRIVATE_PATH = /(?<![\w.~/-])\/(?:Users|home|tmp|private|var)(?:\/[^\s`'"()<>[\]{}|,;]*)?/g;
+var PRIVATE_ROOTS = "Users|home|tmp|private|var|Volumes|workspaces|root|mnt|opt|srv";
+var PATH_CHARS = String.raw`[^\s` + "`" + String.raw`'"()<>[\]{}|,;]`;
+var PRIVATE_PATH = new RegExp(String.raw`(?<![\w.~/-])\/+(?:${PRIVATE_ROOTS})(?:\/${PATH_CHARS}*)?`, "g");
+var WINDOWS_USER_PATH = new RegExp(String.raw`(?<![\w.-])[A-Za-z]:[\\/]Users(?:[\\/]${PATH_CHARS}*)?`, "g");
+var QUOTED_PRIVATE_PATH = new RegExp(String.raw`(["'` + "`" + String.raw`])((?:\/+(?:${PRIVATE_ROOTS})|[A-Za-z]:[\\/]Users)(?:[\\/][^"'` + "`" + String.raw`\n]*)?)\1`, "g");
+var FILE_SCHEME = /\bfile:\/\/(?=\/|[A-Za-z]:)/gi;
+var nameOf = (path) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+function reduce(match) {
+  const trail = /[.:]+$/.exec(match)?.[0] ?? "";
+  return nameOf(match.slice(0, match.length - trail.length)) + trail;
+}
 var escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function scrubPaths(text, repoRoot2) {
-  let out = text;
+  let out = text.replace(FILE_SCHEME, "");
   if (repoRoot2) {
     const root = resolve3(repoRoot2);
     const forms = [.../* @__PURE__ */ new Set([`/private${root}`, root, root.replace(/^\/private\//, "/")])].sort((a, b) => b.length - a.length);
     for (const form of forms) out = out.replace(new RegExp(`(?<![\\w.~/-])${escape(form)}/`, "g"), "");
   }
-  return out.replace(PRIVATE_PATH, (match) => {
-    const trail = /[.:]+$/.exec(match)?.[0] ?? "";
-    return basename(match.slice(0, match.length - trail.length)) + trail;
-  });
+  return out.replace(QUOTED_PRIVATE_PATH, (_m, quote, path) => `${quote}${nameOf(path)}${quote}`).replace(WINDOWS_USER_PATH, reduce).replace(PRIVATE_PATH, reduce);
 }
 
 // src/events/expand-writes.ts
