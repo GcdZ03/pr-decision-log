@@ -130,7 +130,7 @@ test('a tight budget drops the details first, with a note', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: Array.from({ length: 80 }, (_, i) => fileDiff(`src/f${i}.ts`)).join('\n') }), { maxChars: 900 });
 
   assert.ok(md.length <= 900, `body is ${md.length} chars`);
-  assert.match(md, /truncated/i);
+  assert.match(md, /cut to fit the PR body/);
   assert.match(md, /\*\*Checks \(last run\):\*\*/, 'the verdict survives');
   assert.ok(md.trimEnd().endsWith('<!-- pdl:end -->'));
 });
@@ -155,4 +155,111 @@ test('the footer says where the log came from', () => {
 
 test('the footer states the timezone once', () => {
   assert.match(render(buildLog([run('npm test')], meta)), /times are UTC/);
+});
+
+/** A worst-case PR: many long paths, checks, confirmed decisions, warnings and risky files. */
+function bigLog(files: number) {
+  const events: TimelineEvent[] = [];
+  for (let i = 0; i < 20; i++) events.push(run(`uv run pytest services/api/tests/ingestion/test_stage_${i}.py -q`, i % 5 === 0 ? 'fail' : 'pass'));
+  const diff = [
+    ...Array.from({ length: files }, (_, i) => fileDiff(`services/api/src/ingestion/pipelines/stage_${i}/handlers/transform_record_${i}.py`, (i % 7) + 1)),
+    ...['.github/workflows/ci.yml', 'uv.lock', 'services/api/migrations/0001_init.py', 'services/api/auth/tokens.py', 'CODEOWNERS'].map((p) => fileDiff(p)),
+  ].join('\n');
+  const decisions = [
+    ...Array.from({ length: 6 }, (_, i) => confirmed(`Question ${i}: Option ${i}`)),
+    ...Array.from({ length: 10 }, (_, i): Decision => ({ text: `Stated thing ${i}`, kind: 'decision', source: 'stated', confidence: 'stated' })),
+  ];
+  const log = buildLog(events, { ...meta, diff }, decisions);
+  for (let i = 0; i < 5; i++) log.flags.push({ code: 'TEST_SKIPPED', severity: 'warn', file: `t/test_${i}.py`, detail: '`@pytest.mark.skip` added.', evidence: [] });
+  return log;
+}
+
+const detailsOf = (md: string) => (md.includes('<details>') ? md.slice(md.indexOf('<details>')) : '');
+const RISKY = '**Privileged or risky files:**';
+
+/** Every visible pointer to the details has a block there to point at. */
+function assertPointersResolve(md: string) {
+  const details = detailsOf(md);
+  if (/### Look here\n(?:- .*\n)*- \*…and \d+ more in the details below\.\*/.test(md)) assert.match(details, /#### More to look at/, md);
+  if (/### Decisions you confirmed\n(?:- .*\n)*- \*…and \d+ more in the details below\.\*/.test(md)) assert.match(details, /#### More decisions you confirmed/, md);
+  if (!md.includes('<details>')) assert.doesNotMatch(md, /in the details below/, md);
+}
+
+test('a large PR at the default budget shrinks the details, and every pointer still resolves', () => {
+  const md = render(bigLog(300));
+
+  assert.ok(md.length <= 12_000, `body is ${md.length} chars`);
+  assert.ok(visibleLines(md) <= VISIBLE_LINE_BUDGET, `visible part is ${visibleLines(md)} lines`);
+  assert.ok(md.startsWith('<!-- pdl:start') && md.trimEnd().endsWith('<!-- pdl:end -->'));
+  assert.ok(md.includes('<details>'), 'the details shrink before they go');
+  assertPointersResolve(md);
+  assert.ok(md.includes(RISKY), 'the risky-files bullet is reachable');
+  assert.match(md, /cut to fit the PR body/);
+  assert.match(md, /### Scope/, 'visible blocks are kept while the details can shrink');
+});
+
+test('the Files list shrinks to 30, then to a count, before anything else goes', () => {
+  const full = render(bigLog(300), { maxChars: 1_000_000 });
+  assert.match(full, /\*and 205 more files\.\*/);
+
+  const thirty = render(bigLog(300), { maxChars: full.length - 1 });
+  assert.match(thirty, /\*and 275 more files; see the Files changed tab\.\*/);
+  assert.match(thirty, /\| `uv run pytest services\/api\/tests\/ingestion\/test_stage_1\.py -q` \|/, 'passing checks still listed');
+
+  const counted = render(bigLog(300), { maxChars: thirty.length - 1 });
+  assert.match(counted, /#### Files\n\*305 files; see the Files changed tab\.\*/);
+});
+
+test('then the checks table keeps only checks whose last run did not pass, then the stated block goes', () => {
+  const files = render(bigLog(300), { maxChars: 1_000_000 });
+  const sizes: string[] = [];
+  for (let max = files.length; max > 2_000; max -= 50) sizes.push(render(bigLog(300), { maxChars: max }));
+  const failingOnly = sizes.find((md) => /passed on their last run/.test(md));
+  assert.ok(failingOnly, 'a budget where only failing checks are listed');
+  assert.match(failingOnly, /\| `uv run pytest services\/api\/tests\/ingestion\/test_stage_0\.py -q` \| 1 \| 1 \| fail \|/);
+  assert.doesNotMatch(failingOnly, /test_stage_1\.py -q` \|/);
+  assert.match(failingOnly, /\*16 more checks passed on their last run\.\*/);
+  assert.match(failingOnly, /#### Stated by the agent/, 'the stated block outlasts the passing rows');
+  assert.ok(sizes.some((md) => md.includes('<details>') && !md.includes('#### Stated by the agent')), 'the stated block goes before the pointed-to blocks');
+});
+
+test('every budget keeps the visible part within 15 lines, pointers honest, and blocks dropped in order', () => {
+  for (let max = 300; max <= 14_000; max += 37) {
+    const md = render(bigLog(300), { maxChars: max });
+    const label = `maxChars ${max}`;
+    assert.ok(md.length <= max, `${label}: body is ${md.length} chars`);
+    assert.ok(md.trimEnd().endsWith('<!-- pdl:end -->'), label);
+    assert.ok(visibleLines(md) <= VISIBLE_LINE_BUDGET, `${label}: visible part is ${visibleLines(md)} lines`);
+    assertPointersResolve(md);
+    const has = (h: string) => md.includes(`### ${h}\n`);
+    if (has('Scope')) assert.ok(has('Decisions you confirmed') && has('Look here'), `${label}: Scope outlived a block it should not`);
+    if (has('Decisions you confirmed')) assert.ok(has('Look here'), `${label}: Decisions outlived Look here`);
+    if (md.length > 600) assert.match(md, /\*\*Checks \(last run\):\*\*/, `${label}: the verdict survives`);
+    if (!has('Scope') && md.includes('Intent: see the PR description.')) assert.match(md, /the Scope(?: and [\w ]+)? blocks? (?:was|were) cut|the Scope, /, `${label}: the note names the Scope block`);
+  }
+});
+
+test('a pointer whose block was cut says so rather than pointing at the details', () => {
+  let md = '';
+  for (let max = 4_000; max > 0 && (md === '' || md.includes('<details>')); max -= 10) md = render(bigLog(300), { maxChars: max });
+
+  assert.ok(!md.includes('<details>') && md.includes('### Look here'), md);
+  assert.doesNotMatch(md, /in the details below/);
+  assert.match(md, /- \*…and \d+ more, cut to fit the PR body\.\*/);
+});
+
+test('the untruncated worst case fits the visible budget', () => {
+  const log = bigLog(3);
+  const md = render(log, { maxChars: 1_000_000 });
+
+  assert.ok(!/cut to fit/.test(md), md);
+  assert.match(md, /### Decisions you confirmed[\s\S]*### Look here[\s\S]*### Scope\n.*\n.*\n/);
+  assert.ok(md.includes(RISKY));
+  assert.ok(visibleLines(md) <= VISIBLE_LINE_BUDGET, `visible part is ${visibleLines(md)} lines:\n${md}`);
+});
+
+test('the summary counts the decisions a visible pointer sends the reader to', () => {
+  const md = render(bigLog(3), { maxChars: 1_000_000 });
+
+  assert.match(md, /<summary>[^<]*more decisions \(3\)[^<]*<\/summary>/);
 });

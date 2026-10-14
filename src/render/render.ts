@@ -18,7 +18,14 @@ export const VISIBLE_LINE_BUDGET = 15;
 const VISIBLE_ITEMS = 3;
 const LISTED_PATHS = 3;
 const LISTED_FILES = 100;
+/** The Files list once the budget is tight. */
+const SHORT_FILES = 30;
 const LISTED_STRAY = 10;
+
+/** Visible blocks the budget may drop, named as the cut note names them. */
+const SCOPE = 'Scope';
+const CONFIRMED = 'Decisions you confirmed';
+const LOOK = 'Look here';
 
 const LABEL: Record<FlagCode, string> = {
   TEST_EDITED_AFTER_FAILURE: 'Test changed after it failed',
@@ -89,62 +96,119 @@ function scopeLines(s: Scope): string[] {
   return second ? [first, second] : [first];
 }
 
-/** The first few items, then a pointer to the rest in the details. */
-function capped(items: string[]): string[] {
+/**
+ * The first few items, then a pointer to the rest: to the details when they
+ * hold the rest, or a plain statement when the budget cut it.
+ */
+function capped(items: string[], restInDetails: boolean): string[] {
   if (items.length <= VISIBLE_ITEMS) return items;
-  return [...items.slice(0, VISIBLE_ITEMS), `- *…and ${items.length - VISIBLE_ITEMS} more in the details below.*`];
+  const rest = items.length - VISIBLE_ITEMS;
+  return [...items.slice(0, VISIBLE_ITEMS), restInDetails ? `- *…and ${rest} more in the details below.*` : `- *…and ${rest} more, cut to fit the PR body.*`];
 }
 
-function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[]): string {
+/**
+ * How much of the details a body carries. Under budget pressure they shrink
+ * a step at a time (spec 7: least important first): the Files list, then the
+ * passing checks, then the stated block, then everything but what a visible
+ * pointer refers to.
+ */
+type DetailLevel = {
+  /** Files listed by name; 0 gives the count only; undefined drops the block. */
+  files?: number;
+  /** `failing`: only checks whose last run did not pass, with a count of the rest. */
+  checks?: 'all' | 'failing';
+  stated: boolean;
+  /** Notes, auto-fixes, stray writes and the other-command count. */
+  extras: boolean;
+  moreLook: boolean;
+  moreConfirmed: boolean;
+};
+
+const LEVELS: DetailLevel[] = [
+  { files: LISTED_FILES, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
+  { files: SHORT_FILES, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
+  { files: 0, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
+  { files: 0, checks: 'failing', stated: true, extras: true, moreLook: true, moreConfirmed: true },
+  { files: 0, checks: 'failing', stated: false, extras: true, moreLook: true, moreConfirmed: true },
+  { stated: false, extras: false, moreLook: true, moreConfirmed: true },
+  { stated: false, extras: false, moreLook: true, moreConfirmed: false },
+  { stated: false, extras: false, moreLook: false, moreConfirmed: false },
+];
+
+function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], level: DetailLevel): string {
   const parts: string[] = [];
   const summary: string[] = [];
   const checks = log.checks.filter((c) => !c.fixer);
   const fixers = log.checks.filter((c) => c.fixer);
 
-  if (checks.length > 0) {
-    const rows = checks.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm(c.lastAt)} |`);
-    parts.push(`#### Checks\n\n| Check | Runs | Failures | Last result | Last run |\n| --- | --- | --- | --- | --- |\n${rows.join('\n')}`);
-    summary.push(`every check (${checks.length} distinct, ${checks.reduce((n, c) => n + c.runs, 0)} runs)`);
+  if (checks.length > 0 && level.checks) {
+    const shown = level.checks === 'all' ? checks : checks.filter((c) => c.last !== 'pass');
+    const rows = shown.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm(c.lastAt)} |`);
+    const table = rows.length > 0 ? `\n\n| Check | Runs | Failures | Last result | Last run |\n| --- | --- | --- | --- | --- |\n${rows.join('\n')}` : '';
+    const passed = checks.length - shown.length;
+    parts.push(`#### Checks${table}${passed > 0 ? `\n\n*${count(passed, rows.length > 0 ? 'more check' : 'check')} passed on ${passed === 1 ? 'its' : 'their'} last run.*` : ''}`);
+    const runs = count(checks.reduce((n, c) => n + c.runs, 0), 'run');
+    summary.push(`${level.checks === 'all' ? 'every check' : 'checks'} (${checks.length} distinct, ${runs})`);
   }
-  if (fixers.length > 0) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ''}`).join(', ')}`);
-  if (moreLook.length > 0) {
+  if (fixers.length > 0 && level.extras) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ''}`).join(', ')}`);
+  if (moreLook.length > 0 && level.moreLook) {
     parts.push(`#### More to look at\n${moreLook.join('\n')}`);
     summary.push(`more to look at (${moreLook.length})`);
   }
-  if (moreConfirmed.length > 0) parts.push(`#### More decisions you confirmed\n${moreConfirmed.join('\n')}`);
+  if (moreConfirmed.length > 0 && level.moreConfirmed) {
+    parts.push(`#### More decisions you confirmed\n${moreConfirmed.join('\n')}`);
+    summary.push(`more decisions (${moreConfirmed.length})`);
+  }
 
   const notes = log.flags.filter((f) => f.severity === 'info');
-  if (notes.length > 0) {
+  if (notes.length > 0 && level.extras) {
     parts.push(`#### Notes\n${notes.map((f) => flagLine(f, true)).join('\n')}`);
     summary.push(`notes (${notes.length})`);
   }
 
   const stated = log.decisions.filter((d) => d.confidence !== 'confirmed_by_human');
-  if (stated.length > 0) {
+  if (stated.length > 0 && level.stated) {
     parts.push(`#### Stated by the agent\n${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ''}${d.text} *(stated)*`).join('\n')}`);
     summary.push(`stated by the agent (${stated.length})`);
   }
 
   const files = log.changes.filter((c) => c.status !== 'not in diff');
-  if (files.length > 0) {
-    const rows = files.slice(0, LISTED_FILES).map((c) => {
+  if (files.length > 0 && level.files !== undefined) {
+    const listed = Math.min(files.length, level.files);
+    const rows = files.slice(0, listed).map((c) => {
       const tags = [...(c.status && c.status !== 'modified' ? [c.status] : []), ...(c.role === 'test' ? ['test'] : [])];
-      return `- ${code(cell(c.file))}${tags.length ? ` (${tags.join(', ')})` : ''}`;
+      return `- ${code(c.file)}${tags.length ? ` (${tags.join(', ')})` : ''}`;
     });
-    const rest = files.length - LISTED_FILES;
-    parts.push(`#### Files\n${rows.join('\n')}${rest > 0 ? `\n\n*and ${count(rest, 'more file')}.*` : ''}`);
-    summary.push(`every file (${files.length})`);
+    const rest = files.length - listed;
+    // The full list ends with a plain count; a list cut for the budget says where the rest is.
+    const tail = listed === 0
+      ? `*${count(files.length, 'file')}; see the Files changed tab.*`
+      : rest > 0 ? `*and ${count(rest, 'more file')}${level.files === LISTED_FILES ? '' : '; see the Files changed tab'}.*` : '';
+    parts.push(`#### Files${rows.length ? `\n${rows.join('\n')}` : ''}${tail ? `${rows.length ? '\n\n' : '\n'}${tail}` : ''}`);
+    summary.push(`${rest === 0 ? 'every file' : 'files'} (${files.length})`);
   }
-  if (log.strayWrites.length > 0) {
+  if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count(log.strayWrites.length, 'file')}: ${paths(log.strayWrites, LISTED_STRAY)}`);
   }
-  if (log.otherCommands > 0) {
+  if (log.otherCommands > 0 && level.extras) {
     parts.push(`${count(log.otherCommands, 'other command')} (file writes, searches, git) not listed.`);
     summary.push(count(log.otherCommands, 'other command'));
   }
 
   if (parts.length === 0) return '';
   return `\n<details><summary>${summary.join(' · ') || 'details'}</summary>\n\n${parts.join('\n\n')}\n\n</details>\n`;
+}
+
+const listed = (names: string[]): string =>
+  names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+
+/** Says exactly what the budget cut; empty when nothing was. */
+function cutNote(detailsCut: 'none' | 'some' | 'all', blocks: string[]): string {
+  const named = blocks.length > 0 ? `the ${listed(blocks)} ${blocks.length > 1 ? 'blocks' : 'block'}` : '';
+  if (detailsCut === 'none' && !named) return '';
+  const subject = detailsCut === 'some' ? 'Some details' : detailsCut === 'all' ? (named ? `Details and ${named}` : 'Details') : named.replace(/^t/, 'T');
+  const verb = detailsCut === 'none' && blocks.length === 1 ? 'was' : 'were';
+  return `*${subject} ${verb} cut to fit the PR body.*`;
 }
 
 /**
@@ -165,23 +229,42 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
 
   const look = lookHere(log);
   const confirmed = log.decisions.filter((d) => d.confidence === 'confirmed_by_human').map((d) => `- ${d.text}`);
+  const moreLook = look.slice(VISIBLE_ITEMS);
+  const moreConfirmed = confirmed.slice(VISIBLE_ITEMS);
+  const anyDetails = details(log, moreLook, moreConfirmed, LEVELS[0]!) !== '';
 
-  const visible = [`\n${checksLine(log)}\n${contextLine(log)}\n`];
-  if (confirmed.length > 0) visible.push(`\n### Decisions you confirmed\n${capped(confirmed).join('\n')}\n`);
-  if (look.length > 0) visible.push(`\n### Look here\n${capped(look).join('\n')}\n`);
-  if (log.scope) visible.push(`\n### Scope\n${scopeLines(log.scope).join('\n')}\n`);
+  /**
+   * One candidate body. The note joins the second verdict line rather than
+   * adding a line, so the visible budget holds however much is cut.
+   */
+  const body = (level: DetailLevel, levelIndex: number, dropped: string[]): string => {
+    const detailsText = details(log, moreLook, moreConfirmed, level);
+    const detailsCut = levelIndex === 0 || !anyDetails ? 'none' : detailsText ? 'some' : 'all';
+    const note = cutNote(detailsCut, dropped);
+    const blocks = [`\n${checksLine(log)}\n${contextLine(log)}${note ? ` ${note}` : ''}\n`];
+    if (confirmed.length > 0 && !dropped.includes(CONFIRMED)) {
+      blocks.push(`\n### Decisions you confirmed\n${capped(confirmed, level.moreConfirmed).join('\n')}\n`);
+    }
+    if (look.length > 0 && !dropped.includes(LOOK)) blocks.push(`\n### Look here\n${capped(look, level.moreLook).join('\n')}\n`);
+    if (log.scope && !dropped.includes(SCOPE)) blocks.push(`\n### Scope\n${scopeLines(log.scope).join('\n')}\n`);
+    return header + blocks.join('') + detailsText + footer;
+  };
 
-  const full = header + visible.join('') + details(log, look.slice(VISIBLE_ITEMS), confirmed.slice(VISIBLE_ITEMS)) + footer;
-  if (full.length <= max) return full;
-
-  // Over budget: the details go first, then visible blocks from the end.
-  // The verdict line and both markers always survive.
-  const note = '\n*Log truncated to fit the PR body budget; details omitted.*\n';
-  for (let keep = visible.length; keep >= 1; keep--) {
-    const body = header + visible.slice(0, keep).join('') + note + footer;
-    if (body.length <= max) return body;
+  // Over budget: the details shrink, then go, then visible blocks go in the
+  // order Scope, Decisions, Look here. The verdict lines and both markers
+  // always survive.
+  for (const [i, level] of LEVELS.entries()) {
+    const md = body(level, i, []);
+    if (md.length <= max) return md;
   }
-  const minimal = header + `\n${checksLine(log)}\n` + note + MARKER_END + '\n';
+  const none = LEVELS[LEVELS.length - 1]!;
+  const droppable = [SCOPE, CONFIRMED, LOOK].filter((b) =>
+    (b === SCOPE && log.scope) || (b === CONFIRMED && confirmed.length > 0) || (b === LOOK && look.length > 0));
+  for (let n = 1; n <= droppable.length; n++) {
+    const md = body(none, LEVELS.length - 1, droppable.slice(0, n));
+    if (md.length <= max) return md;
+  }
+  const minimal = `${header}\n${checksLine(log)}\n*The log was cut to fit the PR body.*\n${MARKER_END}\n`;
   if (minimal.length <= max) return minimal;
   return `${header.slice(0, Math.max(0, max - MARKER_END.length - 1))}\n${MARKER_END}\n`;
 }
