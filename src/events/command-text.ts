@@ -100,6 +100,11 @@ const LAUNCHER_RE = /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|timeout\s+\S+|time|env|ni
 /** Tools that run another tool: the runner is the word after them. Kept in the fragment. */
 const WRAPPER_RE = /^(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+(?:exec|dlx)|uv\s+run|poetry\s+run|pipenv\s+run|bundle\s+exec|python3?\s+-m)(?:\s+--?[\w-]+)*\s+/;
 
+/** A fragment without its launcher and wrapper: `uv run pytest -q` is `pytest -q`. */
+export function withoutWrapper(fragment: string): string {
+  return fragment.replace(LAUNCHER_RE, '').replace(WRAPPER_RE, '');
+}
+
 /**
  * Whether a command segment runs a `kind` runner. The runner has to be the
  * command being run, after any launcher or wrapper: `cat > vitest.config.ts`
