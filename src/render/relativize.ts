@@ -35,3 +35,29 @@ export function relativize(path: string, repoRoot: string): string {
   // Outside the repo: publish the name only, never the location.
   return basename(path);
 }
+
+/** An absolute path under a directory that names a person or a machine. */
+const PRIVATE_PATH = /(?<![\w.~/-])\/(?:Users|home|tmp|private|var)(?:\/[^\s`'"()<>[\]{}|,;]*)?/g;
+
+const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Make free text (a stated decision, a flag's sentence) safe to publish.
+ *
+ * A path inside the repository loses its root, in all three of the forms
+ * `relativize` accepts, so it reads repo-relative. Any other absolute path
+ * under a home or temporary directory keeps only its name.
+ */
+export function scrubPaths(text: string, repoRoot?: string): string {
+  let out = text;
+  if (repoRoot) {
+    const root = resolve(repoRoot);
+    const forms = [...new Set([`/private${root}`, root, root.replace(/^\/private\//, '/')])].sort((a, b) => b.length - a.length);
+    for (const form of forms) out = out.replace(new RegExp(`(?<![\\w.~/-])${escape(form)}/`, 'g'), '');
+  }
+  return out.replace(PRIVATE_PATH, (match) => {
+    // Sentence punctuation after a path is not part of it.
+    const trail = /[.:]+$/.exec(match)?.[0] ?? '';
+    return basename(match.slice(0, match.length - trail.length)) + trail;
+  });
+}

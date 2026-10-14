@@ -791,6 +791,9 @@ function redact(input, extra = []) {
   return { text, hits };
 }
 
+// src/render/build-log.ts
+import { basename as basename4, isAbsolute as isAbsolute5 } from "node:path";
+
 // src/render/relativize.ts
 import { basename, isAbsolute as isAbsolute3, relative, resolve as resolve3 } from "node:path";
 function insideRepo(path, repoRoot2) {
@@ -811,6 +814,20 @@ function relativize(path, repoRoot2) {
     if (rel && !rel.startsWith("..") && !isAbsolute3(rel)) return rel;
   }
   return basename(path);
+}
+var PRIVATE_PATH = /(?<![\w.~/-])\/(?:Users|home|tmp|private|var)(?:\/[^\s`'"()<>[\]{}|,;]*)?/g;
+var escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function scrubPaths(text, repoRoot2) {
+  let out = text;
+  if (repoRoot2) {
+    const root = resolve3(repoRoot2);
+    const forms = [.../* @__PURE__ */ new Set([`/private${root}`, root, root.replace(/^\/private\//, "/")])].sort((a, b) => b.length - a.length);
+    for (const form of forms) out = out.replace(new RegExp(`(?<![\\w.~/-])${escape(form)}/`, "g"), "");
+  }
+  return out.replace(PRIVATE_PATH, (match) => {
+    const trail = /[.:]+$/.exec(match)?.[0] ?? "";
+    return basename(match.slice(0, match.length - trail.length)) + trail;
+  });
 }
 
 // src/events/expand-writes.ts
@@ -1245,7 +1262,13 @@ function buildLog(recorded, meta, decisions = []) {
     for (const h of hits) rules.add(h);
     return text;
   };
-  const rel = (p) => meta.repoRoot ? relativize(p, meta.repoRoot) : p;
+  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
+  const diffPaths = fromDiff.map((f) => f.path).sort((a, b) => b.length - a.length);
+  const rel = (p) => {
+    if (meta.repoRoot) return relativize(p, meta.repoRoot);
+    if (!isAbsolute5(p)) return p;
+    return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename4(p);
+  };
   const verification = [];
   let otherCommands = 0;
   const edits = /* @__PURE__ */ new Map();
@@ -1274,7 +1297,6 @@ function buildLog(recorded, meta, decisions = []) {
     }
   }
   const role = (file) => isTestFile(file) ? "test" : "source";
-  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   const changes = fromDiff.length > 0 ? [
     ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
     // A file only ever written from the shell and absent from the diff is
@@ -1288,12 +1310,12 @@ function buildLog(recorded, meta, decisions = []) {
   const risky = riskyFiles(fromDiff.map((f) => f.path));
   const scope = fromDiff.length > 0 ? summariseScope(fromDiff) : void 0;
   const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
-  const strayWrites = fromDiff.length > 0 ? meta.notIgnored ? meta.notIgnored(unlisted) : unlisted : [];
+  const strayWrites = fromDiff.length > 0 && meta.repoRoot ? meta.notIgnored ? meta.notIgnored(unlisted) : unlisted : [];
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags = timeline.map((f) => ({
     ...f,
     file: rel(f.file),
-    detail: clean(meta.repoRoot ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail)
+    detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail, meta.repoRoot))
   }));
   const ranATest = verification.some((v) => v.kind === "test");
   if (changes.length > 0 && !ranATest) {
@@ -1327,7 +1349,7 @@ function buildLog(recorded, meta, decisions = []) {
     ...scope ? { scope } : {},
     strayWrites,
     // Model text, so it passes through the same redactor as everything else.
-    decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
+    decisions: decisions.map((d) => ({ ...d, text: clean(scrubPaths(d.text, meta.repoRoot)) })),
     redaction: { hits: rules.size, rules: [...rules] }
   };
 }

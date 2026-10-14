@@ -234,3 +234,53 @@ test('with no diff there is no scope, no never-run line and no stray list', () =
   assert.deepEqual(log.neverRun, []);
   assert.deepEqual(log.strayWrites, []);
 });
+
+const ABSOLUTE = ['/Users', '/home', '/tmp', '/private', '/var'];
+
+test('with no repo root, no absolute path reaches the log', () => {
+  const home = '/Users/someone/secret-proj';
+  const log = buildLog([
+    { kind: 'command', id: 'c1', at: '2026-09-19T09:00:00Z', command: `pytest ${home}/tests/test_a.py -q`, classification: 'test', outcome: 'fail', output: 'FAILED tests/test_a.py::t' },
+    edit('e1', `${home}/tests/test_a.py`, 3, 1),
+    writer('w1', `cat > ${home}/notes.txt <<'EOF'\nbody\nEOF`, [{ path: `${home}/notes.txt` }, { path: '/private/var/folders/x/scratch.txt' }]),
+    edit('e2', `${home}/src/api.ts`),
+    edit('e3', '/home/dev/elsewhere/other.ts'),
+    edit('e4', '/tmp/t/tool.ts'),
+  ], { ...meta, diff: DIFF }, [{ text: `Decided to store at ${home}/data`, kind: 'decision', source: 'stated', confidence: 'stated' }]);
+
+  const json = JSON.stringify(log);
+  for (const prefix of ABSOLUTE) assert.ok(!json.includes(prefix), `${prefix} leaked: ${json}`);
+  assert.deepEqual(log.strayWrites, []);
+  assert.ok(log.flags.some((f) => f.code === 'TEST_EDITED_AFTER_FAILURE'));
+});
+
+test('with no repo root and no diff, edits keep only their names', () => {
+  const log = buildLog([edit('e1', '/Users/someone/proj/src/a.ts'), edit('e2', 'src/b.ts')], meta);
+
+  assert.deepEqual(log.changes.map((c) => c.file), ['a.ts', 'src/b.ts']);
+});
+
+test('with no repo root, an absolute edit of a file in the diff is matched to its diff path', () => {
+  const log = buildLog([edit('e1', '/Users/someone/proj/src/api.ts')], { ...meta, diff: DIFF });
+
+  assert.equal(log.changes.find((c) => c.file === 'src/api.ts')?.edits, 1);
+  assert.ok(!log.changes.some((c) => c.status === 'not in diff'));
+});
+
+test('a stated decision publishes in-repo paths repo-relative and other private paths by name only', () => {
+  const log = buildLog([], { ...meta, repoRoot: '/repo' }, [
+    { text: 'Store uploads under /repo/data/uploads, and copy /Users/me/Downloads/sample.csv into fixtures.', kind: 'decision', source: 'stated', confidence: 'stated' },
+    { text: 'Read /private/repo/config.toml and /var/folders/x/tmp.json first.', kind: 'assumption', source: 'stated', confidence: 'stated' },
+  ]);
+
+  assert.equal(log.decisions[0]?.text, 'Store uploads under data/uploads, and copy sample.csv into fixtures.');
+  assert.equal(log.decisions[1]?.text, 'Read config.toml and tmp.json first.');
+});
+
+test('a macOS repo root reached through /private is stripped from decisions in either form', () => {
+  const log = buildLog([], { ...meta, repoRoot: '/private/tmp/work/app' }, [
+    { text: 'Edit /tmp/work/app/src/a.ts and /private/tmp/work/app/src/b.ts.', kind: 'decision', source: 'stated', confidence: 'stated' },
+  ]);
+
+  assert.equal(log.decisions[0]?.text, 'Edit src/a.ts and src/b.ts.');
+});

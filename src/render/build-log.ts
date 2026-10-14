@@ -3,7 +3,8 @@ import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
 import { redact, type RedactionRule } from './redact.ts';
-import { insideRepo, relativize } from './relativize.ts';
+import { basename, isAbsolute } from 'node:path';
+import { insideRepo, relativize, scrubPaths } from './relativize.ts';
 import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
 import { classifyCommand } from '../events/classify-command.ts';
@@ -100,7 +101,19 @@ export function buildLog(
     return text;
   };
 
-  const rel = (p: string): string => (meta.repoRoot ? relativize(p, meta.repoRoot) : p);
+  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
+  // Longest first, so `src/a/b.ts` wins over `b.ts` when matching a path's end.
+  const diffPaths = fromDiff.map((f) => f.path).sort((a, b) => b.length - a.length);
+  /**
+   * A path as published. Without a repository root there is nothing to make
+   * an absolute path relative to: it becomes its diff path when it ends with
+   * one, and otherwise its name, never its location.
+   */
+  const rel = (p: string): string => {
+    if (meta.repoRoot) return relativize(p, meta.repoRoot);
+    if (!isAbsolute(p)) return p;
+    return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename(p);
+  };
 
   const verification: Verification[] = [];
   let otherCommands = 0;
@@ -142,7 +155,6 @@ export function buildLog(
   // often write files from the shell, which no edit event records. The edit
   // tools' counts are added where they exist.
   const role = (file: string): Change['role'] => (isTestFile(file) ? 'test' : 'source');
-  const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   const changes: Change[] = fromDiff.length > 0
     ? [
         ...fromDiff.map((f) => ({ file: f.path, edits: edits.get(f.path) ?? 0, role: role(f.path), status: f.status })),
@@ -160,13 +172,14 @@ export function buildLog(
   const risky = riskyFiles(fromDiff.map((f) => f.path));
   const scope = fromDiff.length > 0 ? summariseScope(fromDiff) : undefined;
   const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
-  const strayWrites = fromDiff.length > 0 ? (meta.notIgnored ? meta.notIgnored(unlisted) : unlisted) : [];
+  // Without a root, "inside the repository" cannot be decided, so nothing is listed.
+  const strayWrites = fromDiff.length > 0 && meta.repoRoot ? (meta.notIgnored ? meta.notIgnored(unlisted) : unlisted) : [];
 
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
   const flags: Flag[] = timeline.map((f) => ({
     ...f,
     file: rel(f.file),
-    detail: clean(meta.repoRoot ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail),
+    detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail, meta.repoRoot)),
   }));
 
   // Code changed but nothing verified it.
@@ -207,7 +220,7 @@ export function buildLog(
     ...(scope ? { scope } : {}),
     strayWrites,
     // Model text, so it passes through the same redactor as everything else.
-    decisions: decisions.map((d) => ({ ...d, text: clean(d.text) })),
+    decisions: decisions.map((d) => ({ ...d, text: clean(scrubPaths(d.text, meta.repoRoot)) })),
     redaction: { hits: rules.size, rules: [...rules] },
   };
 }
