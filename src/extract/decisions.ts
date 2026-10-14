@@ -129,7 +129,22 @@ function fromStatedRationale(entries: TranscriptEntry[], markers: typeof MARKERS
   return out;
 }
 
-type Question = { question: string; header?: string };
+type Question = { question: string; header?: string; labels: string[] };
+
+const withoutHint = (label: string): string => label.replace(/\s*\(Recommended\)\s*$/i, '').trim();
+
+/**
+ * Whether an answer is made only of options the question offered: one label,
+ * or several joined by ", " for a multi-select (labels may contain commas
+ * themselves, so this tries every split). Anything else was typed by the
+ * human, through "Other", and is never published.
+ */
+function isOfferedAnswer(answer: string, labels: string[]): boolean {
+  if (labels.length === 0) return false;
+  const fits = (rest: string): boolean =>
+    labels.some((l) => rest === l || (rest.startsWith(`${l}, `) && fits(rest.slice(l.length + 2))));
+  return fits(answer);
+}
 
 function questionsOf(input: Record<string, unknown>): Question[] {
   const qs = input['questions'];
@@ -139,6 +154,10 @@ function questionsOf(input: Record<string, unknown>): Question[] {
     .map((q) => ({
       question: typeof q['question'] === 'string' ? q['question'] : '',
       header: typeof q['header'] === 'string' ? q['header'] : undefined,
+      labels: (Array.isArray(q['options']) ? q['options'] : [])
+        .map((o) => (typeof o === 'object' && o !== null ? (o as Record<string, unknown>)['label'] : undefined))
+        .filter((l): l is string => typeof l === 'string')
+        .map(withoutHint),
     }))
     .filter((q) => q.question !== '');
 }
@@ -189,8 +208,11 @@ function fromQuestions(entries: TranscriptEntry[]): Decision[] {
       for (const q of pending.questions) {
         const answer = answerFor(result.text, q.question);
         if (answer === undefined) continue;
+        // The human's own words never reach the log: a typed answer is
+        // recorded as answered, with no text.
+        const shown = isOfferedAnswer(answer, q.labels) ? answer : 'answered in the session';
         decisions.push({
-          text: `${q.header ?? q.question}: ${answer}`,
+          text: `${q.header ?? q.question}: ${shown}`,
           kind: 'decision',
           source: 'human-answer',
           confidence: 'confirmed_by_human',

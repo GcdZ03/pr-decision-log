@@ -113,7 +113,7 @@ test('rationale from a different turn is not linked to a later edit', () => {
 test('a recommendation hint from the option label is not part of the decision', () => {
   const ask = {
     type: 'tool_use', id: 'tu-ask', name: 'AskUserQuestion',
-    input: { questions: [{ question: 'Which version?', header: 'Version', options: [] }] },
+    input: { questions: [{ question: 'Which version?', header: 'Version', options: [{ label: 'v0.6.0 (Recommended)' }, { label: 'v0.5.1' }] }] },
   };
   const entries: TranscriptEntry[] = [
     { type: 'assistant', timestamp: at, message: { role: 'assistant', content: [ask] } },

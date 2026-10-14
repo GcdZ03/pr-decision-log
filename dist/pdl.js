@@ -1740,12 +1740,19 @@ function fromStatedRationale(entries, markers) {
   }
   return out;
 }
+var withoutHint = (label) => label.replace(/\s*\(Recommended\)\s*$/i, "").trim();
+function isOfferedAnswer(answer, labels) {
+  if (labels.length === 0) return false;
+  const fits = (rest) => labels.some((l) => rest === l || rest.startsWith(`${l}, `) && fits(rest.slice(l.length + 2)));
+  return fits(answer);
+}
 function questionsOf(input) {
   const qs = input["questions"];
   if (!Array.isArray(qs)) return [];
   return qs.filter((q) => typeof q === "object" && q !== null).map((q) => ({
     question: typeof q["question"] === "string" ? q["question"] : "",
-    header: typeof q["header"] === "string" ? q["header"] : void 0
+    header: typeof q["header"] === "string" ? q["header"] : void 0,
+    labels: (Array.isArray(q["options"]) ? q["options"] : []).map((o) => typeof o === "object" && o !== null ? o["label"] : void 0).filter((l) => typeof l === "string").map(withoutHint)
   })).filter((q) => q.question !== "");
 }
 function answerFor(result, question) {
@@ -1773,8 +1780,9 @@ function fromQuestions(entries) {
       for (const q of pending.questions) {
         const answer = answerFor(result.text, q.question);
         if (answer === void 0) continue;
+        const shown = isOfferedAnswer(answer, q.labels) ? answer : "answered in the session";
         decisions.push({
-          text: `${q.header ?? q.question}: ${answer}`,
+          text: `${q.header ?? q.question}: ${shown}`,
           kind: "decision",
           source: "human-answer",
           confidence: "confirmed_by_human",
