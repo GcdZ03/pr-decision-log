@@ -107,9 +107,10 @@ test('toolOf handles option values and special cases correctly', () => {
     ['docker compose --project-name proj build web', 'docker compose build'],
     // docker-compose as one word
     ['docker-compose build web', 'docker compose build'],
-    // npm/pnpm with -w option (workspace)
+    // npm -w takes a value (workspace), pnpm -w is a flag (workspace-root)
     ['npm run -w pkg test', 'npm test'],
-    ['pnpm run -w @pkg/name typecheck', 'pnpm typecheck'],
+    ['npm run -w @pkg/name typecheck', 'npm typecheck'],
+    ['pnpm -w test', 'pnpm test'],
     // yarn workspace
     ['yarn workspace web test', 'yarn test'],
     ['yarn workspace @org/pkg run lint', 'yarn lint'],

@@ -19,9 +19,17 @@ export type Check = {
 
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
 /** Package-manager options that take a value, so the value is not mistaken for the script. */
-const OPTION_WITH_VALUE = new Set(['--filter', '-F', '--dir', '-C', '--prefix', '--workspace', '--cwd', '-w']);
+const OPTION_WITH_VALUE = new Set(['--filter', '-F', '--dir', '-C', '--prefix', '--workspace', '--cwd']);
 const TASK_RUNNERS = new Set(['just', 'make', 'task']);
 const SUBCOMMAND_TOOLS = new Set(['go', 'cargo', 'swift', 'dotnet', 'playwright']);
+
+/** Check if an option takes a value for the given package manager. */
+function takesValue(word: string, packageManager: string): boolean {
+  if (OPTION_WITH_VALUE.has(word)) return true;
+  // -w takes a value only for npm (workspace), not for pnpm/yarn/bun (flags)
+  if (word === '-w' && packageManager === 'npm') return true;
+  return false;
+}
 
 export function toolOf(fragment: string): string {
   let words = withoutWrapper(fragment).split(/\s+/).filter(Boolean);
@@ -37,7 +45,7 @@ export function toolOf(fragment: string): string {
   if (first === 'yarn' && words[1] === 'workspace' && words[2]) {
     for (let i = 3; i < words.length; i++) {
       const w = words[i]!;
-      if (OPTION_WITH_VALUE.has(w)) { i++; continue; }
+      if (takesValue(w, 'yarn')) { i++; continue; }
       if (w.startsWith('-') || w === 'run') continue;
       return `yarn ${w}`;
     }
@@ -47,7 +55,7 @@ export function toolOf(fragment: string): string {
   if (PACKAGE_MANAGERS.has(first)) {
     for (let i = 1; i < words.length; i++) {
       const w = words[i]!;
-      if (OPTION_WITH_VALUE.has(w)) { i++; continue; }
+      if (takesValue(w, first)) { i++; continue; }
       if (w.startsWith('-') || w === 'run') continue;
       return `${first} ${w}`;
     }
@@ -61,7 +69,7 @@ export function toolOf(fragment: string): string {
   if (first === 'cargo' && words[1]?.startsWith('+')) {
     for (let i = 2; i < words.length; i++) {
       const w = words[i]!;
-      if (OPTION_WITH_VALUE.has(w)) { i++; continue; }
+      if (takesValue(w, 'cargo')) { i++; continue; }
       if (w.startsWith('-') || w === 'run') continue;
       return `cargo ${w}`;
     }
