@@ -682,13 +682,20 @@ function gap(from, to) {
   if (s < 3600) return `${Math.round(s / 60)} min`;
   return `${Math.round(s / 3600)} h`;
 }
-function detail(failure, w, passed) {
+function outcome(refails, end) {
+  const last = refails[refails.length - 1];
+  const again = !last ? "" : refails.length === 1 ? `it failed again at ${hhmm(last.at)}` : `it failed again ${refails.length} more times, last at ${hhmm(last.at)}`;
+  const other = end.interruptedBy ? `\`${summariseCommand(end.interruptedBy.command)}\` failed at ${hhmm(end.interruptedBy.at)}` : "";
+  if (end.passed) return again ? `${again}, then passed at ${hhmm(end.passed.at)}` : `it passed at ${hhmm(end.passed.at)}`;
+  if (other) return again ? `${again}, and did not pass again before ${other}` : `it did not pass again before ${other}`;
+  return again ? `${again}, and has not passed since` : "it has not passed since";
+}
+function detail(failure, w, refails, end) {
   const how = w.viaShell === w.count ? "from the shell" : w.viaShell === 0 ? "with the Edit tool" : "with the Edit tool and from the shell";
   const soon = gap(failure.at, w.first.at);
   const change = w.count === 1 ? `the test was ${how === "from the shell" ? "written from the shell" : `changed ${how}`}${soon ? ` ${soon} later` : ""}` : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ""}`;
-  const after = passed ? `it passed at ${hhmm(passed.at)}` : "it has not passed since";
   const counts = w.first.assertionsBefore !== void 0 && w.last.assertionsAfter !== void 0 && w.first.assertionsBefore !== w.last.assertionsAfter ? ` Assertion count ${w.first.assertionsBefore} -> ${w.last.assertionsAfter}.` : "";
-  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${after}.${counts}`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${counts}`;
 }
 function sameRun(a, b) {
   if (a.command === b.command) return true;
@@ -698,8 +705,9 @@ function sameRun(a, b) {
 function detectTestEditedAfterFailure(events) {
   const flags = [];
   let openFailure = null;
+  let refails = [];
   let window = /* @__PURE__ */ new Map();
-  const emit = (failure, passed) => {
+  const emit = (failure, end) => {
     for (const w of window.values()) {
       if (isPurelyAdditive(w.first.assertionsBefore, w.last.assertionsAfter)) continue;
       if (w.first.additive && w.last.additive) continue;
@@ -707,25 +715,30 @@ function detectTestEditedAfterFailure(events) {
         code: "TEST_EDITED_AFTER_FAILURE",
         severity: "warn",
         file: w.first.path,
-        detail: detail(failure, w, passed),
+        detail: detail(failure, w, refails, end),
         evidence: [failure.id, w.first.id]
       });
     }
     window = /* @__PURE__ */ new Map();
+    refails = [];
   };
   for (const e of events) {
     if (e.kind === "command") {
       if (classifyCommand(e.command) !== "test") continue;
       if (e.outcome === "fail") {
-        if (openFailure) emit(openFailure);
+        if (openFailure && sameRun(e, openFailure)) {
+          refails.push(e);
+          continue;
+        }
+        if (openFailure) emit(openFailure, { interruptedBy: e });
         openFailure = e;
       } else if (e.outcome === "pass" && openFailure && sameRun(e, openFailure)) {
-        emit(openFailure, e);
+        emit(openFailure, { passed: e });
         openFailure = null;
       }
     } else if (e.kind === "edit" && openFailure) {
       if (!isTestFile(e.path)) continue;
-      if (!failureNamesFile(openFailure.output ?? "", e.path)) continue;
+      if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? "", e.path))) continue;
       const seen = window.get(e.path);
       const shell = e.via === "shell" ? 1 : 0;
       if (seen) {
@@ -735,7 +748,7 @@ function detectTestEditedAfterFailure(events) {
       } else window.set(e.path, { first: e, last: e, count: 1, viaShell: shell });
     }
   }
-  if (openFailure) emit(openFailure);
+  if (openFailure) emit(openFailure, {});
   return flags;
 }
 
