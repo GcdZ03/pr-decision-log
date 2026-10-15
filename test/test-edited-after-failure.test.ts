@@ -271,3 +271,64 @@ test('several edits are counted, and a failure that never passed says so', () =>
 
   assert.equal(flags[0]?.detail, '`npm test` failed at 09:00; the test was changed 2 times with the Edit tool, first 2 min later; it has not passed since. Assertion count 3 -> 1.');
 });
+
+// Seen on a real PR: the same check failed, the test was rewritten, it failed
+// again, the test was rewritten again, and it passed. Two windows produced two
+// bullets, and the first claimed "it has not passed since", which was false.
+const RUN = 'uv run pytest -q tests/test_import_validate.py';
+const fail = (id: string, at: string, command = RUN) =>
+  ({ kind: 'command' as const, id, at, command, classification: 'test' as const, outcome: 'fail' as const, output: 'FAILED tests/test_import_validate.py::t' });
+const pass = (id: string, at: string, command = RUN) =>
+  ({ kind: 'command' as const, id, at, command, classification: 'test' as const, outcome: 'pass' as const });
+const shellWrite = (id: string, at: string) =>
+  ({ kind: 'command' as const, id, at, command: "python3 - <<'EOF'\nx\nEOF", classification: 'other' as const, outcome: 'pass' as const, writes: [{ path: 'tests/test_import_validate.py' }] });
+
+test('a check that fails again before it passes is one episode, said truthfully', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:10:00Z'),
+    shellWrite('w1', '2026-10-15T03:12:00Z'),
+    fail('c2', '2026-10-15T03:12:10Z'),
+    shellWrite('w2', '2026-10-15T03:12:20Z'),
+    pass('c3', '2026-10-15T03:12:40Z'),
+  ]));
+
+  assert.equal(flags.length, 1, JSON.stringify(flags));
+  assert.equal(flags[0]?.detail,
+    `\`${RUN}\` failed at 03:10; the test was changed 2 times from the shell, first 2 min later; it failed again at 03:12, then passed at 03:12.`);
+});
+
+test('a check that keeps failing says how often, and only then that it has not passed', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:10:00Z'),
+    shellWrite('w1', '2026-10-15T03:11:00Z'),
+    fail('c2', '2026-10-15T03:12:00Z'),
+    fail('c3', '2026-10-15T03:14:00Z'),
+  ]));
+
+  assert.equal(flags.length, 1);
+  assert.match(flags[0]?.detail ?? '', /it failed again 2 more times, last at 03:14, and has not passed since\.$/);
+});
+
+test('a refailure that names only another file still keeps the episode open for this one', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:10:00Z'),
+    shellWrite('w1', '2026-10-15T03:11:00Z'),
+    { ...fail('c2', '2026-10-15T03:12:00Z'), output: 'FAILED tests/test_other.py::t' },
+    pass('c3', '2026-10-15T03:13:00Z'),
+  ]));
+
+  assert.equal(flags.length, 1);
+  assert.match(flags[0]?.detail ?? '', /it failed again at 03:12, then passed at 03:13\.$/);
+});
+
+test('when a different check fails next, the flag says that instead of guessing', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:10:00Z'),
+    shellWrite('w1', '2026-10-15T03:11:00Z'),
+    fail('c2', '2026-10-15T03:12:00Z', 'uv run pytest -q tests/test_other.py'),
+  ]));
+
+  assert.equal(flags.length, 1);
+  assert.match(flags[0]?.detail ?? '', /it did not pass again before `uv run pytest -q tests\/test_other\.py` failed at 03:12\.$/);
+  assert.doesNotMatch(flags[0]?.detail ?? '', /has not passed since/);
+});

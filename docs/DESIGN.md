@@ -277,6 +277,8 @@ Rendering rules: no raw tool output ever; file paths relative to repo root; comm
 
 > **Update, 14 Oct 2026 (0.1.6).** The log is laid out for a reviewer, per `docs/superpowers/specs/2026-10-14-reviewer-first-log-design.md`: a Checks line (per tool, last result, fixers apart), a Never-run line, decisions the human confirmed, Look here (warnings and privileged or risky files), Scope (lines, files, areas, tests, largest), and everything else collapsed. Answers the human typed are never published. `pdl show` lists prompts locally. Re-rendered from the same stored events, the largest session's lines above the first collapsed block went from 129 (0.1.5) to 4 (0.1.6).
 
+> **Update, 15 Oct 2026 (0.1.7).** `TEST_EDITED_AFTER_FAILURE` now reports one episode per check: from its first failure until the same check passes. The same check failing again stays in the episode and is reported ("it failed again at 03:12, then passed at 03:12"), and a different check failing ends it as "it did not pass again before `…` failed". Before, each refailure opened a new window, so one fix on a real PR produced two bullets and the first falsely said "it has not passed since".
+
 ```
 pdl init [--global|--project] [--plugin]   write hook config into settings.json (or print plugin manifest)
 pdl hook                                   entrypoint for all hook events; reads stdin, dispatches on hook_event_name
