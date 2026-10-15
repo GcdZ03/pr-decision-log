@@ -37,7 +37,7 @@ const diff = [
 test('a fixed session renders to the golden markdown', () => {
   const md = render(buildLog(events, {
     repo: 'github.com/acme/app', branch: 'feat/imports', headSha: 'abc1234', generatedAt: '2026-10-03T07:00:00Z',
-    repoRoot: '/repo', diff, sessions: ['s1'],
+    repoRoot: '/repo', diff, sessions: ['s1'], prUrl: 'https://github.com/acme/app/pull/12',
   }, [{ text: 'Upload storage: Local volume', kind: 'decision', source: 'human-answer', confidence: 'confirmed_by_human' }]));
 
   if (process.env['PDL_UPDATE_GOLDEN'] === '1') writeFileSync(GOLDEN, md);

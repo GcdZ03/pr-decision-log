@@ -3,7 +3,7 @@ import { blankStrings, countAssertions } from './assertions.ts';
 import { isTestFile } from './test-files.ts';
 import type { Flag } from './types.ts';
 
-type FileDiff = { path: string; deleted: boolean; created?: boolean; renamed?: boolean; binary?: boolean; added: string[]; removed: string[] };
+type FileDiff = { path: string; deleted: boolean; created?: boolean; renamed?: boolean; binary?: boolean; added: string[]; removed: string[]; context: string[] };
 
 /**
  * Split a unified diff into per-file added and removed lines.
@@ -19,7 +19,7 @@ function parse(diff: string): FileDiff[] {
 
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
-      current = { path: /^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? '', deleted: false, added: [], removed: [] };
+      current = { path: /^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? '', deleted: false, added: [], removed: [], context: [] };
       files.push(current);
       inHunk = false;
       continue;
@@ -41,9 +41,33 @@ function parse(diff: string): FileDiff[] {
     if (line.startsWith('@@')) continue;
     if (line.startsWith('+')) current.added.push(line.slice(1));
     else if (line.startsWith('-')) current.removed.push(line.slice(1));
+    else if (line.startsWith(' ')) current.context.push(line.slice(1));
   }
 
   return files;
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether a failing test was added by this PR or already existed.
+ *
+ * A runner names a test by its function (`test_x`, `TestX::test_y`) or its
+ * suite path (`review › keeps ties`); the last part is what a definition line
+ * contains. A name the diff shows only in added lines was added; one that
+ * also shows in unchanged or removed lines existed before. A test file the PR
+ * creates holds only added tests. Undefined when the diff lacks the file.
+ */
+export function testOrigin(diff: string, path: string, testName: string): 'added' | 'existing' | undefined {
+  const file = parse(diff).find((f) => f.path === path || f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`));
+  if (!file) return undefined;
+  if (file.created) return 'added';
+  const last = testName.split(/::|›|>/).pop()?.trim() ?? testName;
+  if (!last) return 'existing';
+  const re = new RegExp(`(?<![\\w])${escapeRe(last)}(?![\\w])`);
+  const inOld = [...file.context, ...file.removed].some((l) => re.test(l));
+  const inNew = file.added.some((l) => re.test(l));
+  return inNew && !inOld ? 'added' : 'existing';
 }
 
 export type FileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
@@ -162,7 +186,7 @@ const skeleton = (line: string): string =>
   line.replace(/(["'`])(?:\\.|(?!\1).)*\1/g, 'S').replace(/\b\d+(?:\.\d+)?\b/g, 'N').trim();
 
 /** The name of the module a test file exercises, by the usual conventions. */
-function stemOf(path: string): string {
+export function stemOf(path: string): string {
   return basename(path)
     .replace(/\.(?:test|spec)\.[cm]?[tj]sx?$/, '')
     .replace(/^test_(.+)\.py$/, '$1')

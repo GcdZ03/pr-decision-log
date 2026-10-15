@@ -308,6 +308,36 @@ function outputShowsFailure(output) {
 function exitStatusMaskable(command2) {
   return /[|;]/.test(command2);
 }
+var FAILING_TEST_LINES = [
+  // pytest: FAILED path.py::Class::test_name[param] - message
+  { re: /^(?:FAILED|ERROR) (\S+?\.py)::(\S+?)(?:\[[^\]\n]*\])?(?:\s+-\s.*)?$/gm, read: (m) => ({ file: m[1], name: m[2] }) },
+  // go: --- FAIL: TestName (0.00s)
+  { re: /^\s*--- FAIL: (\S+)/gm, read: (m) => ({ name: m[1] }) },
+  // vitest: FAIL  path.test.ts > suite > test
+  { re: /^\s*(?:FAIL|×)\s+(\S+\.[cm]?[tj]sx?)\s+>\s+(.+?)\s*$/gm, read: (m) => ({ file: m[1], name: m[2] }) },
+  // jest: ● suite › test
+  { re: /^\s*● (.+?)\s*$/gm, read: (m) => ({ name: m[1] }) },
+  // node:test: ✖ test name (1.2ms)
+  { re: /^\s*✖ (.+?) \(\d+(?:\.\d+)?m?s\)\s*$/gm, read: (m) => ({ name: m[1] }) }
+];
+var MAX_NAME = 100;
+var MAX_TESTS = 20;
+function failingTests(output) {
+  const found = [];
+  for (const { re, read } of FAILING_TEST_LINES) {
+    for (const m of output.matchAll(re)) {
+      const t = read(m);
+      const name = t.name.length > MAX_NAME ? `${t.name.slice(0, MAX_NAME - 1)}\u2026` : t.name;
+      found.push({ at: m.index, test: { ...t.file ? { file: t.file } : {}, name } });
+    }
+  }
+  const out = [];
+  for (const { test } of found.sort((a, b) => a.at - b.at)) {
+    if (out.length >= MAX_TESTS) break;
+    if (!out.some((t) => t.name === test.name && t.file === test.file)) out.push(test);
+  }
+  return out;
+}
 
 // src/events/location.ts
 import { homedir as homedir2 } from "node:os";
@@ -732,6 +762,7 @@ function isTestFile(path) {
 }
 
 // src/flags/test-edited-after-failure.ts
+import { basename } from "node:path";
 function failureNamesFile(output, path) {
   if (!output) return false;
   if (output.includes(path)) return true;
@@ -767,11 +798,22 @@ function outcome(refails, end) {
   if (other) return again ? `${again}, and did not pass again before ${other}` : `it did not pass again before ${other}`;
   return again ? `${again}, and has not passed since` : "it has not passed since";
 }
-function detail(failure, w, refails, end) {
+function testsIn(failures, path) {
+  const names = [];
+  for (const f of failures) {
+    for (const t of failingTests(f.output ?? "")) {
+      if (t.file && basename(t.file) !== basename(path)) continue;
+      if (!names.includes(t.name)) names.push(t.name);
+    }
+  }
+  return names;
+}
+var namedTests = (names) => names.length === 0 ? "" : ` (${names.slice(0, 2).map((n) => `\`${n}\``).join(", ")}${names.length > 2 ? ` +${names.length - 2} more` : ""})`;
+function detail(failure, w, refails, end, tests) {
   const how = w.viaShell === w.count ? "from the shell" : w.viaShell === 0 ? "with the Edit tool" : "with the Edit tool and from the shell";
   const soon = gap(failure.at, w.first.at);
   const change = w.count === 1 ? `the test was ${how === "from the shell" ? "written from the shell" : `changed ${how}`}${soon ? ` ${soon} later` : ""}` : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ""}`;
-  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}${namedTests(tests)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
 }
 function sameRun(a, b) {
   if (a.command === b.command) return true;
@@ -787,12 +829,14 @@ function detectTestEditedAfterFailure(events) {
     for (const w of window.values()) {
       if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
       if (w.first.additive && w.last.additive) continue;
+      const tests = testsIn([failure, ...refails], w.first.path);
       flags.push({
         code: "TEST_EDITED_AFTER_FAILURE",
         severity: "warn",
         file: w.first.path,
-        detail: detail(failure, w, refails, end),
-        evidence: [failure.id, w.first.id]
+        detail: detail(failure, w, refails, end, tests),
+        evidence: [failure.id, w.first.id],
+        ...tests.length > 0 ? { tests } : {}
       });
     }
     window = /* @__PURE__ */ new Map();
@@ -884,10 +928,10 @@ function redact(input, extra = []) {
 }
 
 // src/render/build-log.ts
-import { basename as basename4, isAbsolute as isAbsolute5 } from "node:path";
+import { basename as basename6, isAbsolute as isAbsolute5 } from "node:path";
 
 // src/render/relativize.ts
-import { basename, isAbsolute as isAbsolute3, relative, resolve as resolve3 } from "node:path";
+import { basename as basename2, isAbsolute as isAbsolute3, relative, resolve as resolve3 } from "node:path";
 function insideRepo(path, repoRoot2) {
   if (!isAbsolute3(path)) return true;
   const root = resolve3(repoRoot2);
@@ -905,7 +949,7 @@ function relativize(path, repoRoot2) {
     const rel = relative(base, path);
     if (rel && !rel.startsWith("..") && !isAbsolute3(rel)) return rel;
   }
-  return basename(path);
+  return basename2(path);
 }
 var PRIVATE_ROOTS = "Users|home|tmp|private|var|Volumes|workspaces|root|mnt|opt|srv";
 var PATH_CHARS = String.raw`[^\s` + "`" + String.raw`'"()<>[\]{}|,;]`;
@@ -1074,7 +1118,7 @@ function toolStatuses(checks) {
 }
 
 // src/review/risky.ts
-import { basename as basename2 } from "node:path";
+import { basename as basename3 } from "node:path";
 var LOCKFILES = /* @__PURE__ */ new Set([
   "package-lock.json",
   "pnpm-lock.yaml",
@@ -1088,7 +1132,7 @@ var LOCKFILES = /* @__PURE__ */ new Set([
   "Gemfile.lock",
   "Package.resolved"
 ]);
-var isLockfile = (path) => LOCKFILES.has(basename2(path));
+var isLockfile = (path) => LOCKFILES.has(basename3(path));
 var isMigration = (path) => /(^|\/)(?:migrations|alembic\/versions|prisma\/migrations|db\/migrate)\//.test(path) && !/\.(?:md|txt|rst|example|sample)$/.test(path);
 var AUTH_SEGMENT = /^(?:auth|authn|authz|security|permissions|iam)$/;
 var RULES2 = [
@@ -1170,14 +1214,14 @@ function summariseScope(files) {
 }
 
 // src/flags/diff-signals.ts
-import { basename as basename3 } from "node:path";
+import { basename as basename4 } from "node:path";
 function parse(diff) {
   const files = [];
   let current;
   let inHunk = false;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      current = { path: /^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? "", deleted: false, added: [], removed: [] };
+      current = { path: /^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? "", deleted: false, added: [], removed: [], context: [] };
       files.push(current);
       inHunk = false;
       continue;
@@ -1198,8 +1242,21 @@ function parse(diff) {
     if (line.startsWith("@@")) continue;
     if (line.startsWith("+")) current.added.push(line.slice(1));
     else if (line.startsWith("-")) current.removed.push(line.slice(1));
+    else if (line.startsWith(" ")) current.context.push(line.slice(1));
   }
   return files;
+}
+var escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function testOrigin(diff, path, testName) {
+  const file = parse(diff).find((f) => f.path === path || f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`));
+  if (!file) return void 0;
+  if (file.created) return "added";
+  const last = testName.split(/::|›|>/).pop()?.trim() ?? testName;
+  if (!last) return "existing";
+  const re = new RegExp(`(?<![\\w])${escapeRe(last)}(?![\\w])`);
+  const inOld = [...file.context, ...file.removed].some((l) => re.test(l));
+  const inNew = file.added.some((l) => re.test(l));
+  return inNew && !inOld ? "added" : "existing";
 }
 function changedFiles(diff) {
   return parse(diff).filter((f) => f.path).map((f) => ({
@@ -1281,9 +1338,9 @@ function testDeleted(f) {
 var EXPECT_RE = /\b(?:toBe|toEqual|toStrictEqual|toMatchObject|assertEqual|assertEquals|XCTAssertEqual|assert\.(?:equal|strictEqual|deepEqual|deepStrictEqual))\s*\(/;
 var skeleton = (line) => line.replace(/(["'`])(?:\\.|(?!\1).)*\1/g, "S").replace(/\b\d+(?:\.\d+)?\b/g, "N").trim();
 function stemOf(path) {
-  return basename3(path).replace(/\.(?:test|spec)\.[cm]?[tj]sx?$/, "").replace(/^test_(.+)\.py$/, "$1").replace(/_test\.(?:go|py|rb)$/, "").replace(/Tests?\.(?:swift|java)$/, "");
+  return basename4(path).replace(/\.(?:test|spec)\.[cm]?[tj]sx?$/, "").replace(/^test_(.+)\.py$/, "$1").replace(/_test\.(?:go|py|rb)$/, "").replace(/Tests?\.(?:swift|java)$/, "");
 }
-var moduleName = (path) => basename3(path).replace(/\.[^.]+$/, "");
+var moduleName = (path) => basename4(path).replace(/\.[^.]+$/, "");
 var fragment = (line) => {
   const at = EXPECT_RE.exec(line)?.index ?? 0;
   const f = line.slice(at).trim().replace(/;$/, "");
@@ -1353,6 +1410,37 @@ function analyzeDiff(diff, options = {}) {
   return flags;
 }
 
+// src/review/coverage.ts
+import { basename as basename5 } from "node:path";
+var CODE = /\.(?:[cm]?[tj]sx?|py|go|rs|swift|java|kt|rb|php|cs|c|cc|cpp|h|hpp|m|scala|vue|svelte)$/;
+var NOT_UNIT = /(?:^|\/)__init__\.py$|\.d\.ts$/;
+var sourceStem = (path) => basename5(path).replace(/\.[^.]+$/, "");
+function language(path) {
+  const ext = /\.([^.]+)$/.exec(path)?.[1] ?? "";
+  if (/^[cm]?[tj]sx?$|^vue$|^svelte$/.test(ext)) return "js";
+  if (/^(?:c|cc|cpp|h|hpp|m)$/.test(ext)) return "c";
+  return ext;
+}
+function pointsAt(test, source) {
+  if (language(test) !== language(source)) return false;
+  const t = stemOf(test).toLowerCase();
+  const s = sourceStem(source).toLowerCase();
+  return t === s || t.endsWith(`_${s}`) || t.endsWith(`-${s}`);
+}
+function pairTests(files) {
+  const present = files.filter((f) => f.status !== "deleted");
+  const tests = present.filter((f) => isTestFile(f.path)).map((f) => f.path);
+  const sources = present.filter((f) => !isTestFile(f.path) && CODE.test(f.path) && !NOT_UNIT.test(f.path)).map((f) => f.path);
+  const pairs = [];
+  const untested = [];
+  for (const source of sources) {
+    const matched = tests.filter((t) => pointsAt(t, source));
+    if (matched.length > 0) pairs.push({ source, tests: matched });
+    else untested.push(source);
+  }
+  return { pairs, untested };
+}
+
 // src/render/build-log.ts
 function buildLog(recorded, meta, decisions = []) {
   const events = expandWrites(recorded);
@@ -1367,7 +1455,7 @@ function buildLog(recorded, meta, decisions = []) {
   const rel = (p) => {
     if (meta.repoRoot) return relativize(p, meta.repoRoot);
     if (!isAbsolute5(p)) return p;
-    return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename4(p);
+    return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename6(p);
   };
   const verification = [];
   let otherCommands = 0;
@@ -1412,11 +1500,21 @@ function buildLog(recorded, meta, decisions = []) {
   const unlisted = [...edits.keys()].filter((file) => !fromDiff.some((f) => f.path === file));
   const strayWrites = fromDiff.length > 0 && meta.repoRoot ? meta.notIgnored ? meta.notIgnored(unlisted) : unlisted : [];
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
-  const flags = timeline.map((f) => ({
-    ...f,
-    file: rel(f.file),
-    detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail, meta.repoRoot))
-  }));
+  const flags = timeline.map((f) => {
+    const file = rel(f.file);
+    const named = meta.diff ? (f.tests?.length ? f.tests : [""]).map((name) => ({ name, origin: testOrigin(meta.diff, file, name) })) : [];
+    const known = named.filter((n) => n.origin !== void 0);
+    const kinds = new Set(known.map((n) => n.origin));
+    const origin = known.length === 0 ? void 0 : kinds.size === 2 ? "mixed" : known[0].origin;
+    return {
+      ...f,
+      file,
+      detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
+      ...f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {},
+      ...origin ? { origin } : {},
+      ...origin === "mixed" ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}
+    };
+  });
   const ranATest = verification.some((v) => v.kind === "test");
   if (changes.length > 0 && !ranATest) {
     flags.push({
@@ -1448,6 +1546,9 @@ function buildLog(recorded, meta, decisions = []) {
     risky,
     ...scope ? { scope } : {},
     strayWrites,
+    ...fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {},
+    // Links go into the PR body, so only a plain github.com pull request URL is kept.
+    ...meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {},
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(scrubPaths(d.text, meta.repoRoot)) })),
     redaction: { hits: rules.size, rules: [...rules] }
@@ -1455,6 +1556,7 @@ function buildLog(recorded, meta, decisions = []) {
 }
 
 // src/render/render.ts
+import { createHash as createHash2 } from "node:crypto";
 var MARKER_START = "<!-- pdl:start";
 var MARKER_END = "<!-- pdl:end -->";
 var VISIBLE_ITEMS = 3;
@@ -1492,9 +1594,21 @@ var count2 = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 var num = (n) => n.toLocaleString("en-US");
 var paths = (list, max = LISTED_PATHS) => list.slice(0, max).map(code).join(", ") + (list.length > max ? ` +${list.length - max} more` : "");
 var category = (name) => name.toLowerCase().replace(/\bci\b/, "CI");
-function flagLine(f, note = false) {
-  const where = f.file ? ` ${code(f.file)}` : "";
-  return `- **${LABEL[f.code]}**${note ? " *(note)*" : ""}${where}: ${f.detail}`;
+function fileRef(log, path) {
+  if (!log.prUrl) return code(path);
+  return `[${code(path)}](${log.prUrl}/files#diff-${createHash2("sha256").update(path).digest("hex")})`;
+}
+var fileRefs = (log, list, max = LISTED_PATHS) => list.slice(0, max).map((p) => fileRef(log, p)).join(", ") + (list.length > max ? ` +${list.length - max} more` : "");
+var ORIGIN = { added: " *(a test this PR added)*", existing: " *(an existing test)*" };
+function mixedOrigin(f) {
+  const of = (o) => (f.testOrigins ?? []).filter((t) => t.origin === o).map((t) => t.name);
+  const list = (names) => names.slice(0, 2).map(code).join(", ") + (names.length > 2 ? ` +${names.length - 2} more` : "");
+  return ` *(${list(of("added"))} added by this PR; ${list(of("existing"))} existed)*`;
+}
+function flagLine(log, f, note = false) {
+  const where = f.file ? ` ${fileRef(log, f.file)}` : "";
+  const origin = f.origin === "mixed" ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? "" : "";
+  return `- **${LABEL[f.code]}**${origin}${note ? " *(note)*" : ""}${where}: ${f.detail}`;
 }
 function checksLine(log) {
   const tools = toolStatuses(log.checks);
@@ -1507,13 +1621,13 @@ function contextLine(log) {
 }
 function lookHere(log) {
   const warnings = log.flags.filter((f) => f.severity === "warn");
-  const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(f)));
+  const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(log, f)));
   if (log.risky.length > 0) {
-    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${paths(g.paths)}`).join(" \xB7 ")}`);
+    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${fileRefs(log, g.paths)}`).join(" \xB7 ")}`);
   }
   return items;
 }
-function scopeLines(s) {
+function scopeLines(log, s) {
   const statuses = [
     s.created ? `${s.created} added` : "",
     s.deleted ? `${s.deleted} deleted` : "",
@@ -1523,7 +1637,8 @@ function scopeLines(s) {
   const first = `+${num(s.added)} \u2212${num(s.removed)} lines \xB7 ${count2(s.files, "file")}` + (statuses.length ? ` (${statuses.join(", ")})` : "") + (areas ? ` \xB7 ${areas}` : "");
   const second = [
     s.testsChanged > 0 ? `Tests: ${count2(s.testsChanged, "file")} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ""}` : "",
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${count2(l.lines, "line")})`).join(", ")}` : ""
+    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${fileRef(log, l.path)} (${count2(l.lines, "line")})`).join(", ")}` : "",
+    log.coverage && log.coverage.untested.length > 0 ? `no matching test change: ${count2(log.coverage.untested.length, "source file")}` : ""
   ].filter(Boolean).join(" \xB7 ");
   return second ? [first, second] : [first];
 }
@@ -1576,7 +1691,7 @@ ${moreConfirmed.join("\n")}`);
   const notes = log.flags.filter((f) => f.severity === "info");
   if (notes.length > 0 && level.extras) {
     parts.push(`#### Notes
-${notes.map((f) => flagLine(f, true)).join("\n")}`);
+${notes.map((f) => flagLine(log, f, true)).join("\n")}`);
     summary.push(`notes (${notes.length})`);
   }
   const stated = log.decisions.filter((d) => d.confidence !== "confirmed_by_human");
@@ -1584,6 +1699,13 @@ ${notes.map((f) => flagLine(f, true)).join("\n")}`);
     parts.push(`#### Stated by the agent
 ${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ""}${d.text} *(stated)*`).join("\n")}`);
     summary.push(`stated by the agent (${stated.length})`);
+  }
+  const cov = log.coverage;
+  if (cov && (cov.pairs.length > 0 || cov.untested.length > 0) && level.extras) {
+    const pairs = cov.pairs.map((p) => `- ${code(p.source)} \u2194 ${p.tests.map(code).join(", ")}`);
+    const untested = cov.untested.length > 0 ? `Changed with no matching test change: ${paths(cov.untested, LISTED_STRAY)}` : "";
+    parts.push(`#### Code and tests${pairs.length ? `
+${pairs.join("\n")}` : ""}${untested ? `${pairs.length ? "\n\n" : "\n"}${untested}` : ""}`);
   }
   const files = log.changes.filter((c) => c.status !== "not in diff");
   if (files.length > 0 && level.files !== void 0) {
@@ -1658,7 +1780,7 @@ ${capped(look, level.moreLook).join("\n")}
 `);
     if (log.scope && !dropped.includes(SCOPE)) blocks2.push(`
 ### Scope
-${scopeLines(log.scope).join("\n")}
+${scopeLines(log, log.scope).join("\n")}
 `);
     return header + blocks2.join("") + detailsText + footer;
   };
@@ -1687,10 +1809,10 @@ ${MARKER_END}
 import { spawnSync } from "node:child_process";
 
 // src/publish/splice.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 var BLOCK = /<!-- pdl:start[\s\S]*?<!-- pdl:end -->/;
 function sectionHash(section) {
-  return createHash2("sha256").update(section).digest("hex").slice(0, 12);
+  return createHash3("sha256").update(section).digest("hex").slice(0, 12);
 }
 function splice(body, section) {
   const existing = body ?? "";
@@ -1813,7 +1935,8 @@ function parseView(stdout) {
       number: v["number"],
       body: typeof v["body"] === "string" ? v["body"] : "",
       baseRefName: typeof v["baseRefName"] === "string" && v["baseRefName"] !== "" ? v["baseRefName"] : void 0,
-      repo: /github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url)?.[1]
+      repo: /github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url)?.[1],
+      ...url ? { url } : {}
     };
   } catch {
     return null;
@@ -1831,12 +1954,12 @@ async function autoPublish(o) {
       return skipped("no pull request for this branch (checked recently)");
     }
     let built;
-    const sectionFor = (base2) => {
-      if (built?.base !== base2) built = { base: base2, section: o.build(base2) };
+    const sectionFor = (base2, url) => {
+      if (built?.base !== base2 || built.url !== url) built = { base: base2, url, section: o.build(base2, url) };
       return built.section;
     };
     if (!o.created && st.pr !== void 0 && st.lastHash !== void 0 && st.mode === mode) {
-      if (sectionHash(sectionFor(st.base ?? o.defaultBase)) === st.lastHash) return { status: "unchanged", body: "" };
+      if (sectionHash(sectionFor(st.base ?? o.defaultBase, st.url)) === st.lastHash) return { status: "unchanged", body: "" };
     }
     const view = await gh(["pr", "view", "--json", "number,body,baseRefName,url"]);
     const pr = view.ok ? parseView(view.stdout) : null;
@@ -1845,7 +1968,7 @@ async function autoPublish(o) {
       return skipped(view.ok ? "could not parse gh pr view output" : view.stderr || "no pull request for the current branch");
     }
     const base = pr.baseRefName ?? st.base ?? o.defaultBase;
-    const section = sectionFor(base);
+    const section = sectionFor(base, pr.url);
     const dryRun = o.dryRun ?? false;
     let result;
     if (mode === "comment") {
@@ -1861,7 +1984,7 @@ async function autoPublish(o) {
       }
     }
     const published = result.status === "updated" || result.status === "unchanged";
-    o.state.set(o.key, { pr: pr.number, base, mode, ...published ? { lastHash: sectionHash(section) } : {} });
+    o.state.set(o.key, { pr: pr.number, base, mode, ...pr.url ? { url: pr.url } : {}, ...published ? { lastHash: sectionHash(section) } : {} });
     return result;
   } catch (e) {
     return skipped(e instanceof Error ? e.message : String(e));
@@ -2591,8 +2714,9 @@ function placeResolver() {
     return p;
   };
 }
-function logMeta(place, base) {
+function logMeta(place, base, prUrl) {
   return {
+    ...prUrl ? { prUrl } : {},
     repo: git2(["remote", "get-url", "origin"], place.repo) || "unknown",
     branch: place.branch || "detached",
     headSha: git2(["rev-parse", "--short", "HEAD"], place.repo),
@@ -2610,7 +2734,7 @@ function renderSession(store2, sessionId) {
   const log = buildLog(store2.read(sessionId), logMeta({ repo: repoRoot(), branch: currentBranch() }, defaultBase()), decisionsIn(findTranscript(sessionId)));
   return render(log, { maxChars: config.publish.max_chars });
 }
-function renderBranch(store2, place, base) {
+function renderBranch(store2, place, base, prUrl) {
   const merged = eventsForBranch(store2, place.repo, place.branch);
   const seen = /* @__PURE__ */ new Set();
   const decisions = merged.sessions.flatMap(
@@ -2625,7 +2749,7 @@ function renderBranch(store2, place, base) {
     seen.add(key);
     return true;
   });
-  const log = buildLog(merged.events, { ...logMeta(place, base), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 function build(store2, sessionId) {
@@ -2700,7 +2824,7 @@ async function hook(store2) {
         defaultBase: defaultBase(place.repo),
         state: publishState,
         gh: ghIn(place.repo),
-        build: (base) => renderBranch(store2, place, base)
+        build: (base, url) => renderBranch(store2, place, base, url)
       });
     }
   } catch {

@@ -361,3 +361,42 @@ test('a binary file is marked and counts no lines', () => {
 
   assert.deepEqual(changedFiles(diff), [{ path: 'logo.png', status: 'added', added: 0, removed: 0, binary: true }]);
 });
+
+// Whether a test a flag names was added by this PR or already existed. On a
+// real PR this was the decisive question: changing an existing test's expected
+// value needs the PR to say behaviour changed; deleting an assertion from a
+// test the agent wrote itself is the agent weakening its own check.
+import { testOrigin } from '../src/flags/diff-signals.ts';
+
+const PY_DIFF = [
+  'diff --git a/tests/test_v.py b/tests/test_v.py', '--- a/tests/test_v.py', '+++ b/tests/test_v.py',
+  '@@ -10,6 +10,12 @@',
+  ' def test_suggestion_order():',
+  '-    assert order == [MAR, OCT]',
+  '+    assert order == [OCT, MAR]',
+  '+',
+  '+def test_rank_readings_in_a_reverse_sorted_column():',
+  '+    assert rank(x) == [0.01, 0.99]',
+].join('\n');
+
+test('a test whose definition is only in added lines was added by this PR', () => {
+  assert.equal(testOrigin(PY_DIFF, 'tests/test_v.py', 'test_rank_readings_in_a_reverse_sorted_column'), 'added');
+});
+
+test('a test whose name appears in unchanged or removed lines already existed', () => {
+  assert.equal(testOrigin(PY_DIFF, 'tests/test_v.py', 'test_suggestion_order'), 'existing');
+});
+
+test('a test in a file the PR creates was added, and class-qualified or suite names use their last part', () => {
+  const created = ['diff --git a/tests/test_n.py b/tests/test_n.py', 'new file mode 100644', '--- /dev/null', '+++ b/tests/test_n.py', '@@ -0,0 +1,2 @@', '+class TestX:', '+    def test_y(self): pass'].join('\n');
+  assert.equal(testOrigin(created, 'tests/test_n.py', 'TestX::test_y'), 'added');
+
+  const js = ['diff --git a/src/r.test.ts b/src/r.test.ts', '--- a/src/r.test.ts', '+++ b/src/r.test.ts', '@@ -1,3 +1,6 @@', " describe('review', () => {", "+  it('keeps ties', () => {", '+    expect(1).toBe(1);', '+  });'].join('\n');
+  assert.equal(testOrigin(js, 'src/r.test.ts', 'review › keeps ties'), 'added');
+  assert.equal(testOrigin(js, 'src/r.test.ts', 'review > keeps ties'), 'added');
+});
+
+test('a file the diff does not contain, or a name it never mentions in a modified file, is said carefully', () => {
+  assert.equal(testOrigin(PY_DIFF, 'tests/test_absent.py', 'test_x'), undefined);
+  assert.equal(testOrigin(PY_DIFF, 'tests/test_v.py', 'test_not_in_any_hunk'), 'existing');
+});

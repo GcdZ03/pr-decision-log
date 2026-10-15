@@ -16,4 +16,10 @@ export type Flag = {
   detail: string;
   /** Tool-use ids a reviewer could trace back. */
   evidence: string[];
+  /** For a test-edit flag: the failing tests the runner named in this file. */
+  tests?: string[];
+  /** For a test-edit flag: whether those tests were added by this PR or already existed (from the diff); `mixed` lists each. */
+  origin?: 'added' | 'existing' | 'mixed';
+  /** For a `mixed` origin: each named test and where it came from. */
+  testOrigins?: { name: string; origin: 'added' | 'existing' }[];
 };

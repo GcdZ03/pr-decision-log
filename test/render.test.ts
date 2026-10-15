@@ -271,3 +271,59 @@ test('counts are singular when there is one', () => {
   assert.match(md, /Largest: `src\/b\.ts` \(2 lines\), `src\/a\.ts` \(1 line\)/);
   assert.match(md, /<summary>every check \(1 distinct, 1 run\)/);
 });
+
+// Reviewer shortcuts: a link from each flagged file to its diff, whether the
+// changed test was new or existing, and which changed code no test change
+// accompanies.
+import { createHash } from 'node:crypto';
+
+const PR_URL = 'https://github.com/o/r/pull/37';
+const anchor = (path: string) => `${PR_URL}/files#diff-${createHash('sha256').update(path).digest('hex')}`;
+const SHORTCUT_DIFF = [
+  'diff --git a/tests/test_v.py b/tests/test_v.py', '--- a/tests/test_v.py', '+++ b/tests/test_v.py', '@@ -1,2 +1,4 @@',
+  ' def test_old():', '     assert 1', '+def test_new():', '+    assert 2',
+  'diff --git a/src/v.py b/src/v.py', '--- a/src/v.py', '+++ b/src/v.py', '@@ -1 +1 @@', '-a', '+b',
+  'diff --git a/src/auth.py b/src/auth.py', '--- a/src/auth.py', '+++ b/src/auth.py', '@@ -1 +1 @@', '-a', '+b',
+  'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml', '--- a/.github/workflows/ci.yml', '+++ b/.github/workflows/ci.yml', '@@ -1 +1 @@', '-a', '+b',
+].join('\n');
+const flagged = (name: string): TimelineEvent[] => [
+  { kind: 'command', id: 'f1', at: '2026-10-15T03:12:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'fail', output: `FAILED tests/test_v.py::${name}` },
+  { kind: 'edit', id: 'e1', at: '2026-10-15T03:12:30Z', path: '/repo/tests/test_v.py', assertionsBefore: 2, assertionsAfter: 1 },
+  { kind: 'command', id: 'f2', at: '2026-10-15T03:13:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'pass' },
+];
+
+test('with the PR known, flagged and risky files link to their diff', () => {
+  const md = render(buildLog(flagged('test_new'), { ...meta, diff: SHORTCUT_DIFF, prUrl: PR_URL }));
+
+  assert.ok(md.includes(`[\`tests/test_v.py\`](${anchor('tests/test_v.py')})`), md);
+  assert.ok(md.includes(`[\`.github/workflows/ci.yml\`](${anchor('.github/workflows/ci.yml')})`));
+});
+
+test('without the PR, files stay plain code spans', () => {
+  const md = render(buildLog(flagged('test_new'), { ...meta, diff: SHORTCUT_DIFF }));
+
+  assert.doesNotMatch(md, /files#diff-/);
+});
+
+test('a test-edit flag says whether the test was added by this PR or already existed', () => {
+  assert.match(render(buildLog(flagged('test_new'), { ...meta, diff: SHORTCUT_DIFF })), /\*\*Test changed after it failed\*\* \*\(a test this PR added\)\*/);
+  assert.match(render(buildLog(flagged('test_old'), { ...meta, diff: SHORTCUT_DIFF })), /\*\*Test changed after it failed\*\* \*\(an existing test\)\*/);
+});
+
+test('scope counts changed code with no matching test change, and the details pair code with tests', () => {
+  const md = render(buildLog(flagged('test_new'), { ...meta, diff: SHORTCUT_DIFF }));
+
+  assert.match(md, /### Scope\n.*\nTests: 1 file changed .* · no matching test change: 1 source file\n/);
+  assert.match(md, /#### Code and tests\n- `src\/v\.py` ↔ `tests\/test_v\.py`\n\nChanged with no matching test change: `src\/auth\.py`/);
+});
+
+test('when the failing tests are a mix, the label says which test is new and which existed', () => {
+  const mixed: TimelineEvent[] = [
+    { kind: 'command', id: 'm1', at: '2026-10-15T03:12:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'fail', output: 'FAILED tests/test_v.py::test_old\nFAILED tests/test_v.py::test_new' },
+    { kind: 'edit', id: 'm2', at: '2026-10-15T03:12:30Z', path: '/repo/tests/test_v.py', assertionsBefore: 2, assertionsAfter: 1 },
+    { kind: 'command', id: 'm3', at: '2026-10-15T03:13:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'pass' },
+  ];
+
+  assert.match(render(buildLog(mixed, { ...meta, diff: SHORTCUT_DIFF })),
+    /\*\*Test changed after it failed\*\* \*\(`test_new` added by this PR; `test_old` existed\)\*/);
+});
