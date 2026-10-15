@@ -484,8 +484,67 @@ function sedFiles(args) {
   }
   return inPlace ? files : [];
 }
+function literalAt(text, i) {
+  const prefix = /^[rRbBuU]{0,2}/.exec(text.slice(i, i + 2))?.[0] ?? "";
+  const raw = /r/i.test(prefix);
+  let j = i + prefix.length;
+  for (const triple of [`'''`, `"""`]) {
+    if (!text.startsWith(triple, j)) continue;
+    const end = text.indexOf(triple, j + 3);
+    return end < 0 ? void 0 : { value: text.slice(j + 3, end), end: end + 3 };
+  }
+  const quote = text[j];
+  if (quote !== "'" && quote !== '"' && quote !== "`") return void 0;
+  let value = "";
+  for (j += 1; j < text.length; j++) {
+    const c = text[j];
+    if (c === "\\" && !raw) {
+      const next = text[j + 1] ?? "";
+      value += next === "n" ? "\n" : next === "t" ? "	" : next;
+      j++;
+      continue;
+    }
+    if (c === quote) return { value, end: j + 1 };
+    if (c === "\n" && quote !== "`") return void 0;
+    if (quote === "`" && c === "$" && text[j + 1] === "{") return void 0;
+    value += c;
+  }
+  return void 0;
+}
+function literalAssignments(body) {
+  const out = [];
+  for (const m of body.matchAll(/(?:^|[;\n{]|\b(?:const|let|var)\s)\s*([A-Za-z_]\w*)\s*=(?!=)\s*/g)) {
+    const lit = literalAt(body, m.index + m[0].length);
+    if (lit) out.push({ at: m.index, name: m[1], value: lit.value });
+  }
+  return out;
+}
+var UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\+=|\.replaceAll\(|\.format\(|\bf['"]/;
+function replacements(segment, at) {
+  if (UNREADABLE_CHANGE.test(segment)) return void 0;
+  const arg2 = (pos) => {
+    const start = pos + (/^\s*/.exec(segment.slice(pos))?.[0].length ?? 0);
+    const lit = literalAt(segment, start);
+    if (lit) return lit;
+    const name = /^[A-Za-z_]\w*/.exec(segment.slice(start))?.[0];
+    const value = name ? at(name, start) : void 0;
+    return name && value !== void 0 ? { value, end: start + name.length } : void 0;
+  };
+  const olds = [];
+  const news = [];
+  for (const m of segment.matchAll(/\.replace\(/g)) {
+    const first = arg2(m.index + m[0].length);
+    const comma = first ? /^\s*,/.exec(segment.slice(first.end)) : null;
+    const second = first && comma ? arg2(first.end + comma[0].length) : void 0;
+    const close = second ? /^\s*(?:,\s*\d+\s*)?\)/.exec(segment.slice(second.end)) : null;
+    if (!first || !second || !close) return void 0;
+    olds.push(first.value);
+    news.push(second.value);
+  }
+  return olds.length > 0 ? { old: olds.join("\n"), new: news.join("\n") } : void 0;
+}
 function scriptWrites(body) {
-  const assignments = [...body.matchAll(/(?:^|[;\n]|\b(?:const|let|var)\s)\s*(\w+)\s*=\s*(['"])([^'"\n]+)\2/g)].map((m) => ({ at: m.index, name: m[1], value: m[3] }));
+  const assignments = literalAssignments(body);
   const valueAt = (name, at) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
   const found = [];
   for (const m of body.matchAll(/\bopen\(\s*(?:(['"])([^'"\n]+)\1|(\w+))\s*,\s*(['"])([^'"\n]*)\4/g)) {
@@ -499,7 +558,12 @@ function scriptWrites(body) {
     const path = m[3] ?? valueAt(m[4], m.index);
     if (path) found.push({ at: m.index, path, append: m[1].startsWith("append") });
   }
-  return found.sort((a, b) => a.at - b.at).map(({ path, append }) => ({ path, append }));
+  found.sort((a, b) => a.at - b.at);
+  return found.map((w, i) => {
+    const from = i === 0 ? 0 : found[i - 1].at;
+    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos));
+    return { path: w.path, append: w.append, ...replaced ? { replaced } : {} };
+  });
 }
 var INTERPRETERS = /^(?:python3?(?:\.\d+)?|node|ruby)$/;
 function shellWrites(command2, cwd, home = homedir3()) {
@@ -512,7 +576,7 @@ function shellWrites(command2, cwd, home = homedir3()) {
     return dir ? resolve2(dir, expanded) : expanded;
   };
   const writes = [];
-  const add = (word, append, content) => {
+  const add = (word, append, content, replaced) => {
     if (typeof word !== "string" && word.dynamic) return;
     const raw = typeof word === "string" ? word : word.v;
     if (raw.endsWith("/") || raw === "." || raw === "..") return;
@@ -521,9 +585,14 @@ function shellWrites(command2, cwd, home = homedir3()) {
     const seen = writes.find((x) => x.path === path);
     if (seen) {
       if (!append) seen.append = false;
+      const merged = seen.replaced && replaced ? { old: `${seen.replaced.old}
+${replaced.old}`, new: `${seen.replaced.new}
+${replaced.new}` } : void 0;
+      if (merged) seen.replaced = merged;
+      else delete seen.replaced;
       return;
     }
-    writes.push({ path, append, ...content !== void 0 ? { content } : {} });
+    writes.push({ path, append, ...content !== void 0 ? { content } : {}, ...replaced ? { replaced } : {} });
   };
   for (const cmd of simpleCommands(tokenize(text), bodies)) {
     const { name, args } = commandName(cmd.words);
@@ -539,7 +608,7 @@ function shellWrites(command2, cwd, home = homedir3()) {
       const ops = operands(args);
       if (ops.length >= 2) add(ops[ops.length - 1], false);
     }
-    if (INTERPRETERS.test(name) && cmd.body) for (const s of scriptWrites(cmd.body)) add(s.path, s.append);
+    if (INTERPRETERS.test(name) && cmd.body) for (const s of scriptWrites(cmd.body)) add(s.path, s.append, void 0, s.replaced);
   }
   return writes;
 }
@@ -570,7 +639,9 @@ function normalize(payload, recordedAt) {
     const written = shellWrites(command2, cwd).map((w) => ({
       path: w.path,
       ...w.append ? { append: true } : {},
-      ...w.content !== void 0 && !w.append ? { assertionsAfter: countAssertions(w.content) } : {}
+      ...w.content !== void 0 && !w.append ? { assertionsAfter: countAssertions(w.content) } : {},
+      // A scripted replace is counted like an Edit tool edit: what it took out against what it put in.
+      ...w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {}
     }));
     const writes = written.length > 0 ? { writes: written } : {};
     if (event === "PostToolUseFailure") {
@@ -682,6 +753,12 @@ function gap(from, to) {
   if (s < 3600) return `${Math.round(s / 60)} min`;
   return `${Math.round(s / 3600)} h`;
 }
+var plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+function assertionNote(w) {
+  const removed = w.before - w.after;
+  if (removed <= 0) return "";
+  return w.unknown === 0 ? ` ${plural(removed, "assertion")} removed overall.` : ` The edits pdl could read removed ${plural(removed, "assertion")}.`;
+}
 function outcome(refails, end) {
   const last = refails[refails.length - 1];
   const again = !last ? "" : refails.length === 1 ? `it failed again at ${hhmm(last.at)}` : `it failed again ${refails.length} more times, last at ${hhmm(last.at)}`;
@@ -694,8 +771,7 @@ function detail(failure, w, refails, end) {
   const how = w.viaShell === w.count ? "from the shell" : w.viaShell === 0 ? "with the Edit tool" : "with the Edit tool and from the shell";
   const soon = gap(failure.at, w.first.at);
   const change = w.count === 1 ? `the test was ${how === "from the shell" ? "written from the shell" : `changed ${how}`}${soon ? ` ${soon} later` : ""}` : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ""}`;
-  const counts = w.first.assertionsBefore !== void 0 && w.last.assertionsAfter !== void 0 && w.first.assertionsBefore !== w.last.assertionsAfter ? ` Assertion count ${w.first.assertionsBefore} -> ${w.last.assertionsAfter}.` : "";
-  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${counts}`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
 }
 function sameRun(a, b) {
   if (a.command === b.command) return true;
@@ -709,7 +785,7 @@ function detectTestEditedAfterFailure(events) {
   let window = /* @__PURE__ */ new Map();
   const emit = (failure, end) => {
     for (const w of window.values()) {
-      if (isPurelyAdditive(w.first.assertionsBefore, w.last.assertionsAfter)) continue;
+      if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
       if (w.first.additive && w.last.additive) continue;
       flags.push({
         code: "TEST_EDITED_AFTER_FAILURE",
@@ -739,13 +815,16 @@ function detectTestEditedAfterFailure(events) {
     } else if (e.kind === "edit" && openFailure) {
       if (!isTestFile(e.path)) continue;
       if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? "", e.path))) continue;
-      const seen = window.get(e.path);
-      const shell = e.via === "shell" ? 1 : 0;
-      if (seen) {
-        seen.last = e;
-        seen.count += 1;
-        seen.viaShell += shell;
-      } else window.set(e.path, { first: e, last: e, count: 1, viaShell: shell });
+      const known = e.assertionsBefore !== void 0 && e.assertionsAfter !== void 0;
+      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0 };
+      w.last = e;
+      w.count += 1;
+      w.viaShell += e.via === "shell" ? 1 : 0;
+      if (known) {
+        w.before += e.assertionsBefore;
+        w.after += e.assertionsAfter;
+      } else w.unknown += 1;
+      window.set(e.path, w);
     }
   }
   if (openFailure) emit(openFailure, {});
@@ -863,6 +942,7 @@ function expandWrites(events) {
       via: "shell",
       ...isAbsolute4(w.path) ? { dir: dirname2(w.path) } : {},
       ...w.append ? { additive: true } : {},
+      ...w.assertionsBefore !== void 0 ? { assertionsBefore: w.assertionsBefore } : {},
       ...w.assertionsAfter !== void 0 ? { assertionsAfter: w.assertionsAfter } : {}
     }));
     return [...edits, e];

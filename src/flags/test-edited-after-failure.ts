@@ -59,6 +59,26 @@ function gap(from: string, to: string): string {
 /** How an episode ended: the check passed, another check failed first, or the timeline ran out. */
 type EpisodeEnd = { passed?: CommandEvent; interruptedBy?: CommandEvent };
 
+/**
+ * One test file's edits within an episode. Assertion counts are summed over
+ * the edits whose counts are known: each edit's count covers only the text it
+ * replaced, so comparing the first edit's "before" with the last edit's
+ * "after" compares unrelated fragments, and once printed "4 -> 0" for two
+ * edits that together added an assertion.
+ */
+type FileEdits = { first: EditEvent; last: EditEvent; count: number; viaShell: number; before: number; after: number; unknown: number };
+
+const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** The net assertion change, said only as far as it is known. */
+function assertionNote(w: FileEdits): string {
+  const removed = w.before - w.after;
+  if (removed <= 0) return '';
+  return w.unknown === 0
+    ? ` ${plural(removed, 'assertion')} removed overall.`
+    : ` The edits pdl could read removed ${plural(removed, 'assertion')}.`;
+}
+
 /** What happened after the test changed, without claiming more than the timeline shows. */
 function outcome(refails: CommandEvent[], end: EpisodeEnd): string {
   const last = refails[refails.length - 1];
@@ -76,17 +96,13 @@ function outcome(refails: CommandEvent[], end: EpisodeEnd): string {
  * and how soon, and what happened next. The assertion count is added only
  * when it moved, since an unchanged count says nothing.
  */
-function detail(failure: CommandEvent, w: { first: EditEvent; last: EditEvent; count: number; viaShell: number }, refails: CommandEvent[], end: EpisodeEnd): string {
+function detail(failure: CommandEvent, w: FileEdits, refails: CommandEvent[], end: EpisodeEnd): string {
   const how = w.viaShell === w.count ? 'from the shell' : w.viaShell === 0 ? 'with the Edit tool' : 'with the Edit tool and from the shell';
   const soon = gap(failure.at, w.first.at);
   const change = w.count === 1
     ? `the test was ${how === 'from the shell' ? 'written from the shell' : `changed ${how}`}${soon ? ` ${soon} later` : ''}`
     : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ''}`;
-  const counts =
-    w.first.assertionsBefore !== undefined && w.last.assertionsAfter !== undefined && w.first.assertionsBefore !== w.last.assertionsAfter
-      ? ` Assertion count ${w.first.assertionsBefore} -> ${w.last.assertionsAfter}.`
-      : '';
-  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${counts}`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
 }
 
 /**
@@ -116,11 +132,11 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   // Within one episode, collapse repeated edits to the same file into one flag
   // spanning first-seen to last-seen. Counting each edit separately is what
   // inflated the spike's original measurement.
-  let window = new Map<string, { first: EditEvent; last: EditEvent; count: number; viaShell: number }>();
+  let window = new Map<string, FileEdits>();
 
   const emit = (failure: CommandEvent, end: EpisodeEnd) => {
     for (const w of window.values()) {
-      if (isPurelyAdditive(w.first.assertionsBefore, w.last.assertionsAfter)) continue;
+      if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
       if (w.first.additive && w.last.additive) continue; // Appends only: nothing was taken out.
       flags.push({
         code: 'TEST_EDITED_AFTER_FAILURE',
@@ -158,10 +174,13 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
       // when one of the episode's failures named it.
       if (!isTestFile(e.path)) continue;
       if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? '', e.path))) continue;
-      const seen = window.get(e.path);
-      const shell = e.via === 'shell' ? 1 : 0;
-      if (seen) { seen.last = e; seen.count += 1; seen.viaShell += shell; }
-      else window.set(e.path, { first: e, last: e, count: 1, viaShell: shell });
+      const known = e.assertionsBefore !== undefined && e.assertionsAfter !== undefined;
+      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0 };
+      w.last = e;
+      w.count += 1;
+      w.viaShell += e.via === 'shell' ? 1 : 0;
+      if (known) { w.before += e.assertionsBefore!; w.after += e.assertionsAfter!; } else w.unknown += 1;
+      window.set(e.path, w);
     }
   }
 

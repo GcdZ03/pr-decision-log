@@ -27,7 +27,9 @@ export type CommandWrite = {
   path: string;
   /** `>>`, `tee -a`, an append-mode open: it can only add. */
   append?: true;
-  /** For a heredoc written straight to the file, the assertions in what was written. */
+  /** For a scripted `replace(old, new)`: the assertions in the text it took out. */
+  assertionsBefore?: number;
+  /** For a heredoc written straight to the file, the assertions in what was written; for a scripted replace, in what it put in. */
   assertionsAfter?: number;
 };
 
