@@ -177,7 +177,7 @@ test('commands are classified when the log is built, so a stored misclassificati
   assert.equal(log.otherCommands, 1);
 });
 
-const writer = (id: string, command: string, writes: { path: string; append?: true; assertionsAfter?: number }[],
+const writer = (id: string, command: string, writes: { path: string; append?: true; assertionsBefore?: number; assertionsAfter?: number }[],
   outcome: 'pass' | 'fail' = 'pass', output = ''): TimelineEvent =>
   ({ kind: 'command', id, at: '2026-09-19T09:00:00Z', command, classification: 'other', outcome, output, writes });
 
@@ -291,4 +291,38 @@ test('NO_TEST_RUN counts files in proper English', () => {
 
   assert.equal(one?.detail, '1 file changed and no test command was recorded in this session.');
   assert.equal(two?.detail, '2 files changed and no test command was recorded in this session.');
+});
+
+const ORIGIN_DIFF = [
+  'diff --git a/tests/test_v.py b/tests/test_v.py', '--- a/tests/test_v.py', '+++ b/tests/test_v.py', '@@ -1,2 +1,5 @@',
+  ' def test_old():', '     assert 1',
+  '+def test_new():', '+    assert 2',
+  'diff --git a/src/v.py b/src/v.py', '--- a/src/v.py', '+++ b/src/v.py', '@@ -1 +1 @@', '-a', '+b',
+  'diff --git a/src/auth.py b/src/auth.py', '--- a/src/auth.py', '+++ b/src/auth.py', '@@ -1 +1 @@', '-a', '+b',
+].join('\n');
+
+const episode = (testName: string): TimelineEvent[] => [
+  { kind: 'command', id: 'c1', at: '2026-10-15T03:12:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'fail', output: `FAILED tests/test_v.py::${testName}` },
+  writer('w1', 'x', [{ path: '/repo/tests/test_v.py', assertionsBefore: 2, assertionsAfter: 1 }]),
+  { kind: 'command', id: 'c2', at: '2026-10-15T03:13:00Z', command: 'uv run pytest -q tests/test_v.py', classification: 'test', outcome: 'pass' },
+];
+
+test('a test-edit flag knows whether its failing test was added by the PR or already existed', () => {
+  const added = buildLog(episode('test_new'), { ...meta, repoRoot: '/repo', diff: ORIGIN_DIFF });
+  const existing = buildLog(episode('test_old'), { ...meta, repoRoot: '/repo', diff: ORIGIN_DIFF });
+
+  assert.equal(added.flags.find((f) => f.code === 'TEST_EDITED_AFTER_FAILURE')?.origin, 'added');
+  assert.equal(existing.flags.find((f) => f.code === 'TEST_EDITED_AFTER_FAILURE')?.origin, 'existing');
+});
+
+test('the log pairs changed code with changed tests and names the code without one', () => {
+  const log = buildLog([], { ...meta, repoRoot: '/repo', diff: ORIGIN_DIFF });
+
+  assert.deepEqual(log.coverage, { pairs: [{ source: 'src/v.py', tests: ['tests/test_v.py'] }], untested: ['src/auth.py'] });
+});
+
+test('the PR address is carried for links, and absent without one', () => {
+  assert.equal(buildLog([], { ...meta, prUrl: 'https://github.com/o/r/pull/37' }).prUrl, 'https://github.com/o/r/pull/37');
+  assert.equal(buildLog([], meta).prUrl, undefined);
+  assert.equal(buildLog([], { ...meta, prUrl: 'javascript:alert(1)' }).prUrl, undefined, 'only a GitHub pull request URL');
 });

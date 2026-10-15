@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DecisionLog } from './build-log.ts';
 import type { Flag, FlagCode } from '../flags/types.ts';
 import type { Outcome } from '../events/types.ts';
@@ -60,9 +61,33 @@ const paths = (list: string[], max = LISTED_PATHS): string =>
 /** Lower case mid-sentence, except the acronym. */
 const category = (name: string): string => name.toLowerCase().replace(/\bci\b/, 'CI');
 
-function flagLine(f: Flag, note = false): string {
-  const where = f.file ? ` ${code(f.file)}` : '';
-  return `- **${LABEL[f.code]}**${note ? ' *(note)*' : ''}${where}: ${f.detail}`;
+/**
+ * A file, linked to its diff in the PR's Files tab when the PR is known.
+ * GitHub anchors each file at `#diff-<sha256 of its path>`, so one click goes
+ * from a flag to the change it is about.
+ */
+function fileRef(log: DecisionLog, path: string): string {
+  if (!log.prUrl) return code(path);
+  return `[${code(path)}](${log.prUrl}/files#diff-${createHash('sha256').update(path).digest('hex')})`;
+}
+
+const fileRefs = (log: DecisionLog, list: string[], max = LISTED_PATHS): string =>
+  list.slice(0, max).map((p) => fileRef(log, p)).join(', ') + (list.length > max ? ` +${list.length - max} more` : '');
+
+/** Whether the changed test was new, which decides the reviewer's question. */
+const ORIGIN: Record<string, string> = { added: ' *(a test this PR added)*', existing: ' *(an existing test)*' };
+
+/** Names which failing test is new and which existed, at most two of each. */
+function mixedOrigin(f: Flag): string {
+  const of = (o: 'added' | 'existing') => (f.testOrigins ?? []).filter((t) => t.origin === o).map((t) => t.name);
+  const list = (names: string[]) => names.slice(0, 2).map(code).join(', ') + (names.length > 2 ? ` +${names.length - 2} more` : '');
+  return ` *(${list(of('added'))} added by this PR; ${list(of('existing'))} existed)*`;
+}
+
+function flagLine(log: DecisionLog, f: Flag, note = false): string {
+  const where = f.file ? ` ${fileRef(log, f.file)}` : '';
+  const origin = f.origin === 'mixed' ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? '' : '';
+  return `- **${LABEL[f.code]}**${origin}${note ? ' *(note)*' : ''}${where}: ${f.detail}`;
 }
 
 function checksLine(log: DecisionLog): string {
@@ -78,14 +103,14 @@ function contextLine(log: DecisionLog): string {
 
 function lookHere(log: DecisionLog): string[] {
   const warnings = log.flags.filter((f) => f.severity === 'warn');
-  const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(f)));
+  const items = WARNING_ORDER.flatMap((c) => warnings.filter((f) => f.code === c).map((f) => flagLine(log, f)));
   if (log.risky.length > 0) {
-    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${paths(g.paths)}`).join(' · ')}`);
+    items.push(`- **Privileged or risky files:** ${log.risky.map((g) => `${category(g.category)}: ${fileRefs(log, g.paths)}`).join(' · ')}`);
   }
   return items;
 }
 
-function scopeLines(s: Scope): string[] {
+function scopeLines(log: DecisionLog, s: Scope): string[] {
   const statuses = [
     s.created ? `${s.created} added` : '', s.deleted ? `${s.deleted} deleted` : '', s.renamed ? `${s.renamed} renamed` : '',
   ].filter(Boolean);
@@ -94,7 +119,8 @@ function scopeLines(s: Scope): string[] {
     + (statuses.length ? ` (${statuses.join(', ')})` : '') + (areas ? ` · ${areas}` : '');
   const second = [
     s.testsChanged > 0 ? `Tests: ${count(s.testsChanged, 'file')} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ''}` : '',
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${code(l.path)} (${count(l.lines, 'line')})`).join(', ')}` : '',
+    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${fileRef(log, l.path)} (${count(l.lines, 'line')})`).join(', ')}` : '',
+    log.coverage && log.coverage.untested.length > 0 ? `no matching test change: ${count(log.coverage.untested.length, 'source file')}` : '',
   ].filter(Boolean).join(' · ');
   return second ? [first, second] : [first];
 }
@@ -165,7 +191,7 @@ function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], 
 
   const notes = log.flags.filter((f) => f.severity === 'info');
   if (notes.length > 0 && level.extras) {
-    parts.push(`#### Notes\n${notes.map((f) => flagLine(f, true)).join('\n')}`);
+    parts.push(`#### Notes\n${notes.map((f) => flagLine(log, f, true)).join('\n')}`);
     summary.push(`notes (${notes.length})`);
   }
 
@@ -173,6 +199,14 @@ function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], 
   if (stated.length > 0 && level.stated) {
     parts.push(`#### Stated by the agent\n${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ''}${d.text} *(stated)*`).join('\n')}`);
     summary.push(`stated by the agent (${stated.length})`);
+  }
+
+  // A reading aid, not coverage: a file can be tested by a test this PR left alone.
+  const cov = log.coverage;
+  if (cov && (cov.pairs.length > 0 || cov.untested.length > 0) && level.extras) {
+    const pairs = cov.pairs.map((p) => `- ${code(p.source)} ↔ ${p.tests.map(code).join(', ')}`);
+    const untested = cov.untested.length > 0 ? `Changed with no matching test change: ${paths(cov.untested, LISTED_STRAY)}` : '';
+    parts.push(`#### Code and tests${pairs.length ? `\n${pairs.join('\n')}` : ''}${untested ? `${pairs.length ? '\n\n' : '\n'}${untested}` : ''}`);
   }
 
   const files = log.changes.filter((c) => c.status !== 'not in diff');
@@ -249,7 +283,7 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
       blocks.push(`\n### Decisions you confirmed\n${capped(confirmed, level.moreConfirmed).join('\n')}\n`);
     }
     if (look.length > 0 && !dropped.includes(LOOK)) blocks.push(`\n### Look here\n${capped(look, level.moreLook).join('\n')}\n`);
-    if (log.scope && !dropped.includes(SCOPE)) blocks.push(`\n### Scope\n${scopeLines(log.scope).join('\n')}\n`);
+    if (log.scope && !dropped.includes(SCOPE)) blocks.push(`\n### Scope\n${scopeLines(log, log.scope).join('\n')}\n`);
     return header + blocks.join('') + detailsText + footer;
   };
 

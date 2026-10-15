@@ -82,8 +82,9 @@ function placeResolver(): (dir: string) => Place | undefined {
   };
 }
 
-function logMeta(place: Place, base: string) {
+function logMeta(place: Place, base: string, prUrl?: string) {
   return {
+    ...(prUrl ? { prUrl } : {}),
     repo: git(['remote', 'get-url', 'origin'], place.repo) || 'unknown',
     branch: place.branch || 'detached',
     headSha: git(['rev-parse', '--short', 'HEAD'], place.repo),
@@ -109,7 +110,7 @@ function renderSession(store: EventStore, sessionId: string): string {
  * The branch's log: every session that worked on it, merged in time order, so
  * one PR carries one log however many sessions it took.
  */
-function renderBranch(store: EventStore, place: Place, base: string): string {
+function renderBranch(store: EventStore, place: Place, base: string, prUrl?: string): string {
   const merged = eventsForBranch(store, place.repo, place.branch);
 
   const seen = new Set<string>();
@@ -126,7 +127,7 @@ function renderBranch(store: EventStore, place: Place, base: string): string {
     return true;
   });
 
-  const log = buildLog(merged.events, { ...logMeta(place, base), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 
@@ -219,7 +220,7 @@ async function hook(store: EventStore): Promise<void> {
         defaultBase: defaultBase(place.repo),
         state: publishState,
         gh: ghIn(place.repo),
-        build: (base) => renderBranch(store, place, base),
+        build: (base, url) => renderBranch(store, place, base, url),
       });
     }
   } catch {

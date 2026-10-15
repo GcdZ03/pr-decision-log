@@ -13,7 +13,8 @@ import { summariseChecks, type Check } from '../review/checks.ts';
 import { neverRun, type NeverRun } from '../review/never-run.ts';
 import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
 import { summariseScope, type Scope } from '../review/scope.ts';
-import { analyzeDiff, changedFiles, type FileStatus } from '../flags/diff-signals.ts';
+import { analyzeDiff, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
+import { pairTests, type Coverage } from '../review/coverage.ts';
 
 export type Verification = {
   at: string;
@@ -53,6 +54,10 @@ export type DecisionLog = {
   scope?: Scope;
   /** In-repo files written in the session that the diff lacks and git does not ignore. */
   strayWrites: string[];
+  /** Changed code paired with its changed tests, and the code without one. Absent with no diff. */
+  coverage?: Coverage;
+  /** The pull request, for links to its files; only ever a github.com pull request URL. */
+  prUrl?: string;
   /** Claims, kept in one list with a `kind` and split at render time. */
   decisions: Decision[];
   redaction: { hits: number; rules: string[] };
@@ -76,6 +81,8 @@ export type LogMeta = {
   extraRedactions?: RedactionRule[];
   /** Filters out paths git ignores; omitted, every path is kept. */
   notIgnored?: (paths: string[]) => string[];
+  /** The pull request the log is published to, when known. */
+  prUrl?: string;
 };
 
 
@@ -176,11 +183,23 @@ export function buildLog(
   const strayWrites = fromDiff.length > 0 && meta.repoRoot ? (meta.notIgnored ? meta.notIgnored(unlisted) : unlisted) : [];
 
   const timeline = meta.flagEditAfterFailure === false ? [] : detectTestEditedAfterFailure(events);
-  const flags: Flag[] = timeline.map((f) => ({
-    ...f,
-    file: rel(f.file),
-    detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, rel(f.file)) : f.detail, meta.repoRoot)),
-  }));
+  const flags: Flag[] = timeline.map((f) => {
+    const file = rel(f.file);
+    // Added or existing, from the failing test's own name; a file the PR
+    // creates holds only added tests even when no test was named.
+    const named = meta.diff ? (f.tests?.length ? f.tests : ['']).map((name) => ({ name, origin: testOrigin(meta.diff!, file, name) })) : [];
+    const known = named.filter((n): n is { name: string; origin: 'added' | 'existing' } => n.origin !== undefined);
+    const kinds = new Set(known.map((n) => n.origin));
+    const origin = known.length === 0 ? undefined : kinds.size === 2 ? 'mixed' as const : known[0]!.origin;
+    return {
+      ...f,
+      file,
+      detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
+      ...(f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {}),
+      ...(origin ? { origin } : {}),
+      ...(origin === 'mixed' ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}),
+    };
+  });
 
   // Code changed but nothing verified it.
   const ranATest = verification.some((v) => v.kind === 'test');
@@ -219,6 +238,9 @@ export function buildLog(
     risky,
     ...(scope ? { scope } : {}),
     strayWrites,
+    ...(fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {}),
+    // Links go into the PR body, so only a plain github.com pull request URL is kept.
+    ...(meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {}),
     // Model text, so it passes through the same redactor as everything else.
     decisions: decisions.map((d) => ({ ...d, text: clean(scrubPaths(d.text, meta.repoRoot)) })),
     redaction: { hits: rules.size, rules: [...rules] },

@@ -172,3 +172,21 @@ test('the file-backed state survives a restart and tolerates a corrupt file', ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The log links each flagged file to the PR's Files tab, so it is built with
+// the PR's address; the address is remembered so an unchanged log is still
+// recognised as unchanged on the next turn.
+test('the log is built with the PR url, and the remembered url keeps the unchanged check exact', async () => {
+  const state = memoryState();
+  const seen: (string | undefined)[] = [];
+  const build = (_base: string, url?: string) => { seen.push(url); return section(); };
+
+  await autoPublish({ ...base, gh: fakeGh(() => PR()).gh, state, now: T0, build });
+  const second = fakeGh(() => PR());
+  const result = await autoPublish({ ...base, gh: second.gh, state, now: T0 + 1000, build });
+
+  assert.equal(seen[0], 'https://github.com/o/r/pull/7');
+  assert.equal(seen[1], 'https://github.com/o/r/pull/7', 'the unchanged check builds with the remembered url');
+  assert.equal(result.status, 'unchanged');
+  assert.equal(second.calls.length, 0);
+});

@@ -12,6 +12,8 @@ export type BranchState = {
   base?: string;
   lastHash?: string;
   mode?: PublishMode;
+  /** The PR's address, so the log can link its files and an unchanged log is built the same way. */
+  url?: string;
   /** Epoch ms until which "no PR for this branch" is trusted without asking gh. */
   noPrUntil?: number;
 };
@@ -61,7 +63,7 @@ export class FilePublishState implements PublishStateStore {
  */
 const NO_PR_TTL_MS = 5 * 60_000;
 
-type PrView = { number: number; body: string; baseRefName?: string; repo?: string };
+type PrView = { number: number; body: string; baseRefName?: string; repo?: string; url?: string };
 
 function parseView(stdout: string): PrView | null {
   try {
@@ -73,6 +75,7 @@ function parseView(stdout: string): PrView | null {
       body: typeof v['body'] === 'string' ? v['body'] : '',
       baseRefName: typeof v['baseRefName'] === 'string' && v['baseRefName'] !== '' ? v['baseRefName'] : undefined,
       repo: /github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url)?.[1],
+      ...(url ? { url } : {}),
     };
   } catch {
     return null;
@@ -84,8 +87,8 @@ export type AutoPublishOptions = {
   key: string;
   /** True when this run was triggered by `gh pr create`; skips the caches. */
   created: boolean;
-  /** Renders the log with the PR diffed against `base`. Called only once a PR is known to exist. */
-  build: (base: string) => string;
+  /** Renders the log with the PR diffed against `base`, linking to the PR at `url` when known. Called only once a PR is known to exist. */
+  build: (base: string, url?: string) => string;
   defaultBase: string;
   state: PublishStateStore;
   now?: number;
@@ -127,14 +130,14 @@ export async function autoPublish(o: AutoPublishOptions): Promise<AutoPublishRes
       return skipped('no pull request for this branch (checked recently)');
     }
 
-    let built: { base: string; section: string } | undefined;
-    const sectionFor = (base: string): string => {
-      if (built?.base !== base) built = { base, section: o.build(base) };
+    let built: { base: string; url?: string; section: string } | undefined;
+    const sectionFor = (base: string, url?: string): string => {
+      if (built?.base !== base || built.url !== url) built = { base, url, section: o.build(base, url) };
       return built.section;
     };
 
     if (!o.created && st.pr !== undefined && st.lastHash !== undefined && st.mode === mode) {
-      if (sectionHash(sectionFor(st.base ?? o.defaultBase)) === st.lastHash) return { status: 'unchanged', body: '' };
+      if (sectionHash(sectionFor(st.base ?? o.defaultBase, st.url)) === st.lastHash) return { status: 'unchanged', body: '' };
     }
 
     const view = await gh(['pr', 'view', '--json', 'number,body,baseRefName,url']);
@@ -145,7 +148,7 @@ export async function autoPublish(o: AutoPublishOptions): Promise<AutoPublishRes
     }
 
     const base = pr.baseRefName ?? st.base ?? o.defaultBase;
-    const section = sectionFor(base);
+    const section = sectionFor(base, pr.url);
     const dryRun = o.dryRun ?? false;
 
     let result: PublishResult;
@@ -165,7 +168,7 @@ export async function autoPublish(o: AutoPublishOptions): Promise<AutoPublishRes
 
     // A failed write records no hash, so the next turn tries again.
     const published = result.status === 'updated' || result.status === 'unchanged';
-    o.state.set(o.key, { pr: pr.number, base, mode, ...(published ? { lastHash: sectionHash(section) } : {}) });
+    o.state.set(o.key, { pr: pr.number, base, mode, ...(pr.url ? { url: pr.url } : {}), ...(published ? { lastHash: sectionHash(section) } : {}) });
     return result;
   } catch (e) {
     return skipped(e instanceof Error ? e.message : String(e));

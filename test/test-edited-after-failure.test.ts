@@ -259,7 +259,7 @@ test('the flag says what failed, how and how soon the test changed, and when it 
     { kind: 'command', id: 'c2', at: '2026-10-03T06:19:52.000Z', command: 'uv run pytest tests/test_p.py -q', classification: 'test', outcome: 'pass' },
   ]));
 
-  assert.equal(flags[0]?.detail, '`uv run pytest tests/test_p.py -q` failed at 06:18; the test was written from the shell 8 s later; it passed at 06:19.');
+  assert.equal(flags[0]?.detail, '`uv run pytest tests/test_p.py -q` failed at 06:18 (`t`); the test was written from the shell 8 s later; it passed at 06:19.');
 });
 
 test('several edits are counted, and a failure that never passed says so', () => {
@@ -294,7 +294,7 @@ test('a check that fails again before it passes is one episode, said truthfully'
 
   assert.equal(flags.length, 1, JSON.stringify(flags));
   assert.equal(flags[0]?.detail,
-    `\`${RUN}\` failed at 03:10; the test was changed 2 times from the shell, first 2 min later; it failed again at 03:12, then passed at 03:12.`);
+    `\`${RUN}\` failed at 03:10 (\`t\`); the test was changed 2 times from the shell, first 2 min later; it failed again at 03:12, then passed at 03:12.`);
 });
 
 test('a check that keeps failing says how often, and only then that it has not passed', () => {
@@ -383,4 +383,30 @@ test('with some edits unreadable, a removal in the readable ones is still said, 
   ]));
 
   assert.match(flags[0]?.detail ?? '', / The edits pdl could read removed 1 assertion\.$/);
+});
+
+// The flag names which tests failed, so a reviewer can open the function, not
+// just the file. Only names the runner printed for the flagged file count.
+test('the flag names the failing tests in the flagged file, and carries them', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    { ...fail('c1', '2026-10-15T03:12:00Z'), output: [
+      'FAILED tests/test_import_validate.py::test_rank_readings_in_a_reverse_sorted_column - assert 0.95 < 0.9',
+      'FAILED tests/test_other.py::test_unrelated',
+    ].join('\n') },
+    scripted('w1', '2026-10-15T03:12:10Z', 2, 1),
+    pass('c2', '2026-10-15T03:12:20Z'),
+  ]));
+
+  assert.deepEqual(flags[0]?.tests, ['test_rank_readings_in_a_reverse_sorted_column']);
+  assert.match(flags[0]?.detail ?? '', /failed at 03:12 \(`test_rank_readings_in_a_reverse_sorted_column`\);/);
+  assert.doesNotMatch(flags[0]?.detail ?? '', /test_unrelated/);
+});
+
+test('more than two failing tests are summarised with a count', () => {
+  const out = ['a', 'b', 'c', 'd'].map((n) => `FAILED tests/test_import_validate.py::test_${n}`).join('\n');
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    { ...fail('c1', '2026-10-15T03:12:00Z'), output: out }, scripted('w1', '2026-10-15T03:12:10Z'), pass('c2', '2026-10-15T03:12:20Z'),
+  ]));
+
+  assert.match(flags[0]?.detail ?? '', /failed at 03:12 \(`test_a`, `test_b` \+2 more\);/);
 });

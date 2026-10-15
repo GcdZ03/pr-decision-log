@@ -67,3 +67,42 @@ test('a plain run keeps a reliable exit status', () => {
 test('a trailing command after a semicolon makes the exit status unreliable', () => {
   assert.equal(exitStatusMaskable('npm test; echo done'), true);
 });
+
+// Which tests failed, for the flag a reviewer reads: "pytest failed" names a
+// file, but the decisive question is which test. Only these identifier lines
+// are read from output; nothing else of it is ever published.
+import { failingTests } from '../src/events/runner-output.ts';
+
+test('pytest failures are read as file and test', () => {
+  const out = [
+    'FAILED services/api/tests/test_import_validate.py::test_rank_readings_in_a_reverse_sorted_column - assert 0.95 < 0.9',
+    'FAILED tests/test_b.py::TestDates::test_month_first[param-1]',
+    'ERROR tests/test_c.py::test_setup - fixture error',
+    '=== 2 failed, 1 error in 0.4s ===',
+  ].join('\n');
+
+  assert.deepEqual(failingTests(out), [
+    { file: 'services/api/tests/test_import_validate.py', name: 'test_rank_readings_in_a_reverse_sorted_column' },
+    { file: 'tests/test_b.py', name: 'TestDates::test_month_first' },
+    { file: 'tests/test_c.py', name: 'test_setup' },
+  ]);
+});
+
+test('go, node:test, jest and vitest failures are read by name', () => {
+  assert.deepEqual(failingTests('--- FAIL: TestRankReadings (0.00s)'), [{ name: 'TestRankReadings' }]);
+  assert.deepEqual(failingTests('✖ ranks a reverse-sorted column (1.2ms)\nℹ fail 1'), [{ name: 'ranks a reverse-sorted column' }]);
+  assert.deepEqual(failingTests('  ● dates › ranks month-first readings\n\n    expect(received)'), [{ name: 'dates › ranks month-first readings' }]);
+  assert.deepEqual(failingTests(' FAIL  src/lib/review.test.ts > review > keeps ties'), [{ file: 'src/lib/review.test.ts', name: 'review > keeps ties' }]);
+});
+
+test('each test is named once, at most a few, and long names are cut', () => {
+  const many = Array.from({ length: 12 }, (_, i) => `FAILED t.py::test_${i}`).join('\n');
+  assert.equal(failingTests(`${many}\n${many}`).length, 12);
+  assert.ok((failingTests(`FAILED t.py::test_${'x'.repeat(300)}`)[0]?.name.length ?? 0) <= 100);
+});
+
+test('lines that only look like failures, and passing output, name nothing', () => {
+  assert.deepEqual(failingTests('ℹ pass 3\nℹ fail 0\n✔ handles failure (1ms)'), []);
+  assert.deepEqual(failingTests('echo FAILED: see logs'), []);
+  assert.deepEqual(failingTests('Error: /Users/me/secret/path.txt not found'), []);
+});

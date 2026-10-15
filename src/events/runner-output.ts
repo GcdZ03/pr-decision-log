@@ -50,3 +50,45 @@ export function outputShowsFailure(output: string): boolean {
 export function exitStatusMaskable(command: string): boolean {
   return /[|;]/.test(command);
 }
+
+/** A failing test as a runner reports it: its file when the runner says, and its name. */
+export type FailingTest = { file?: string; name: string };
+
+/**
+ * Per-runner lines that name one failing test. Line-anchored and specific:
+ * these are the only parts of a test run's output that may reach a log, and
+ * they hold code identifiers that the PR's own diff already shows.
+ */
+const FAILING_TEST_LINES: { re: RegExp; read: (m: RegExpMatchArray) => FailingTest }[] = [
+  // pytest: FAILED path.py::Class::test_name[param] - message
+  { re: /^(?:FAILED|ERROR) (\S+?\.py)::(\S+?)(?:\[[^\]\n]*\])?(?:\s+-\s.*)?$/gm, read: (m) => ({ file: m[1]!, name: m[2]! }) },
+  // go: --- FAIL: TestName (0.00s)
+  { re: /^\s*--- FAIL: (\S+)/gm, read: (m) => ({ name: m[1]! }) },
+  // vitest: FAIL  path.test.ts > suite > test
+  { re: /^\s*(?:FAIL|×)\s+(\S+\.[cm]?[tj]sx?)\s+>\s+(.+?)\s*$/gm, read: (m) => ({ file: m[1]!, name: m[2]! }) },
+  // jest: ● suite › test
+  { re: /^\s*● (.+?)\s*$/gm, read: (m) => ({ name: m[1]! }) },
+  // node:test: ✖ test name (1.2ms)
+  { re: /^\s*✖ (.+?) \(\d+(?:\.\d+)?m?s\)\s*$/gm, read: (m) => ({ name: m[1]! }) },
+];
+
+const MAX_NAME = 100;
+const MAX_TESTS = 20;
+
+/** The tests a failing run names, in output order, each once. */
+export function failingTests(output: string): FailingTest[] {
+  const found: { at: number; test: FailingTest }[] = [];
+  for (const { re, read } of FAILING_TEST_LINES) {
+    for (const m of output.matchAll(re)) {
+      const t = read(m);
+      const name = t.name.length > MAX_NAME ? `${t.name.slice(0, MAX_NAME - 1)}…` : t.name;
+      found.push({ at: m.index, test: { ...(t.file ? { file: t.file } : {}), name } });
+    }
+  }
+  const out: FailingTest[] = [];
+  for (const { test } of found.sort((a, b) => a.at - b.at)) {
+    if (out.length >= MAX_TESTS) break;
+    if (!out.some((t) => t.name === test.name && t.file === test.file)) out.push(test);
+  }
+  return out;
+}

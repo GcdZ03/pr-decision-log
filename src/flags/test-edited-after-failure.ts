@@ -10,6 +10,8 @@ export type { Flag, FlagCode } from './types.ts';
 import type { Flag } from './types.ts';
 import { isTestFile } from './test-files.ts';
 import { runnerFragment } from '../events/command-text.ts';
+import { failingTests } from '../events/runner-output.ts';
+import { basename } from 'node:path';
 import { classifyCommand } from '../events/classify-command.ts';
 
 
@@ -96,13 +98,28 @@ function outcome(refails: CommandEvent[], end: EpisodeEnd): string {
  * and how soon, and what happened next. The assertion count is added only
  * when it moved, since an unchanged count says nothing.
  */
-function detail(failure: CommandEvent, w: FileEdits, refails: CommandEvent[], end: EpisodeEnd): string {
+/** The failing tests the episode's runs named in this file, in order, each once. */
+function testsIn(failures: CommandEvent[], path: string): string[] {
+  const names: string[] = [];
+  for (const f of failures) {
+    for (const t of failingTests(f.output ?? '')) {
+      if (t.file && basename(t.file) !== basename(path)) continue;
+      if (!names.includes(t.name)) names.push(t.name);
+    }
+  }
+  return names;
+}
+
+const namedTests = (names: string[]): string =>
+  names.length === 0 ? '' : ` (${names.slice(0, 2).map((n) => `\`${n}\``).join(', ')}${names.length > 2 ? ` +${names.length - 2} more` : ''})`;
+
+function detail(failure: CommandEvent, w: FileEdits, refails: CommandEvent[], end: EpisodeEnd, tests: string[]): string {
   const how = w.viaShell === w.count ? 'from the shell' : w.viaShell === 0 ? 'with the Edit tool' : 'with the Edit tool and from the shell';
   const soon = gap(failure.at, w.first.at);
   const change = w.count === 1
     ? `the test was ${how === 'from the shell' ? 'written from the shell' : `changed ${how}`}${soon ? ` ${soon} later` : ''}`
     : `the test was changed ${w.count} times ${how}${soon ? `, first ${soon} later` : ''}`;
-  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
+  return `\`${summariseCommand(failure.command)}\` failed at ${hhmm(failure.at)}${namedTests(tests)}; ${change}; ${outcome(refails, end)}.${assertionNote(w)}`;
 }
 
 /**
@@ -138,12 +155,14 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
     for (const w of window.values()) {
       if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
       if (w.first.additive && w.last.additive) continue; // Appends only: nothing was taken out.
+      const tests = testsIn([failure, ...refails], w.first.path);
       flags.push({
         code: 'TEST_EDITED_AFTER_FAILURE',
         severity: 'warn',
         file: w.first.path,
-        detail: detail(failure, w, refails, end),
+        detail: detail(failure, w, refails, end, tests),
         evidence: [failure.id, w.first.id],
+        ...(tests.length > 0 ? { tests } : {}),
       });
     }
     window = new Map();
