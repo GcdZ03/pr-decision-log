@@ -36,7 +36,7 @@ test('hook payloads flow through the store into a flag', () => {
 
     assert.equal(flags.length, 1);
     assert.equal(flags[0]?.file, 'src/sync.test.ts');
-    assert.match(flags[0]?.detail ?? '', /2 -> 1/);
+    assert.match(flags[0]?.detail ?? '', /1 assertion removed overall/);
   });
 });
 

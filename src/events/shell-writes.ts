@@ -3,7 +3,12 @@ import { isAbsolute, resolve } from 'node:path';
 import { splitHeredocs } from './command-text.ts';
 
 /** A file a shell command wrote. `content` is known only for a heredoc written straight to the file. */
-export type ShellWrite = { path: string; append: boolean; content?: string };
+/**
+ * A file a shell command wrote. `content` is known only for a heredoc written
+ * straight to the file; `replaced` only for a script whose every change to
+ * the file was a `replace(old, new)` with readable literals.
+ */
+export type ShellWrite = { path: string; append: boolean; content?: string; replaced?: { old: string; new: string } };
 
 type Word = { k: 'w'; v: string; dynamic: boolean };
 type Op = { k: 'op'; v: string };
@@ -133,15 +138,88 @@ function sedFiles(args: Word[]): Word[] {
   return inPlace ? files : [];
 }
 
+/** A string literal starting at `i` (Python, including triple-quoted, or JS): its value and where it ends. */
+function literalAt(text: string, i: number): { value: string; end: number } | undefined {
+  const prefix = /^[rRbBuU]{0,2}/.exec(text.slice(i, i + 2))?.[0] ?? '';
+  const raw = /r/i.test(prefix);
+  let j = i + prefix.length;
+  for (const triple of [`'''`, `"""`]) {
+    if (!text.startsWith(triple, j)) continue;
+    const end = text.indexOf(triple, j + 3);
+    return end < 0 ? undefined : { value: text.slice(j + 3, end), end: end + 3 };
+  }
+  const quote = text[j];
+  if (quote !== "'" && quote !== '"' && quote !== '`') return undefined;
+  let value = '';
+  for (j += 1; j < text.length; j++) {
+    const c = text[j]!;
+    if (c === '\\' && !raw) {
+      const next = text[j + 1] ?? '';
+      value += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+      j++;
+      continue;
+    }
+    if (c === quote) return { value, end: j + 1 };
+    if (c === '\n' && quote !== '`') return undefined;
+    if (quote === '`' && c === '$' && text[j + 1] === '{') return undefined; // An interpolation: not a literal.
+    value += c;
+  }
+  return undefined;
+}
+
+/** Variables assigned a literal, in order, so a use resolves to the value it had there. */
+function literalAssignments(body: string): { at: number; name: string; value: string }[] {
+  const out: { at: number; name: string; value: string }[] = [];
+  for (const m of body.matchAll(/(?:^|[;\n{]|\b(?:const|let|var)\s)\s*([A-Za-z_]\w*)\s*=(?!=)\s*/g)) {
+    const lit = literalAt(body, m.index + m[0].length);
+    if (lit) out.push({ at: m.index, name: m[1]!, value: lit.value });
+  }
+  return out;
+}
+
+/** Ways a script changes text that cannot be read off literally. Any of them makes the counts unknown. */
+const UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\+=|\.replaceAll\(|\.format\(|\bf['"]/;
+
+/**
+ * The text a script segment's `replace(old, new)` calls take out and put in,
+ * or undefined when the segment changes the text in any way that is not a
+ * replace with readable literals: a half-read edit would give a count that
+ * looks exact and is not.
+ */
+function replacements(segment: string, at: (name: string, pos: number) => string | undefined): { old: string; new: string } | undefined {
+  if (UNREADABLE_CHANGE.test(segment)) return undefined;
+  const arg = (pos: number): { value: string; end: number } | undefined => {
+    const start = pos + (/^\s*/.exec(segment.slice(pos))?.[0].length ?? 0);
+    const lit = literalAt(segment, start);
+    if (lit) return lit;
+    const name = /^[A-Za-z_]\w*/.exec(segment.slice(start))?.[0];
+    const value = name ? at(name, start) : undefined;
+    return name && value !== undefined ? { value, end: start + name.length } : undefined;
+  };
+
+  const olds: string[] = [];
+  const news: string[] = [];
+  for (const m of segment.matchAll(/\.replace\(/g)) {
+    const first = arg(m.index + m[0].length);
+    const comma = first ? /^\s*,/.exec(segment.slice(first.end)) : null;
+    const second = first && comma ? arg(first.end + comma[0].length) : undefined;
+    const close = second ? /^\s*(?:,\s*\d+\s*)?\)/.exec(segment.slice(second.end)) : null;
+    if (!first || !second || !close) return undefined;
+    olds.push(first.value);
+    news.push(second.value);
+  }
+  return olds.length > 0 ? { old: olds.join('\n'), new: news.join('\n') } : undefined;
+}
+
 /**
  * Files a Python or Node script writes, where the path is a literal or a
  * variable assigned one: `open(p, 'w')`, `Path('x').write_text`,
- * `fs.writeFileSync('x', ...)`. Agents edit with exactly these scripts.
+ * `fs.writeFileSync('x', ...)`. Agents edit with exactly these scripts. Each
+ * write also carries the `replace` texts of the script since the previous
+ * write, which is how such scripts edit one file after another.
  */
-function scriptWrites(body: string): { path: string; append: boolean }[] {
-  // Assignments in order, so a write resolves a variable to its value at that point.
-  const assignments = [...body.matchAll(/(?:^|[;\n]|\b(?:const|let|var)\s)\s*(\w+)\s*=\s*(['"])([^'"\n]+)\2/g)]
-    .map((m) => ({ at: m.index, name: m[1]!, value: m[3]! }));
+function scriptWrites(body: string): { path: string; append: boolean; replaced?: { old: string; new: string } }[] {
+  const assignments = literalAssignments(body);
   const valueAt = (name: string, at: number) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
 
   const found: { at: number; path: string; append: boolean }[] = [];
@@ -156,7 +234,13 @@ function scriptWrites(body: string): { path: string; append: boolean }[] {
     const path = m[3] ?? valueAt(m[4]!, m.index);
     if (path) found.push({ at: m.index, path, append: m[1]!.startsWith('append') });
   }
-  return found.sort((a, b) => a.at - b.at).map(({ path, append }) => ({ path, append }));
+
+  found.sort((a, b) => a.at - b.at);
+  return found.map((w, i) => {
+    const from = i === 0 ? 0 : found[i - 1]!.at;
+    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos));
+    return { path: w.path, append: w.append, ...(replaced ? { replaced } : {}) };
+  });
 }
 
 const INTERPRETERS = /^(?:python3?(?:\.\d+)?|node|ruby)$/;
@@ -183,15 +267,22 @@ export function shellWrites(command: string, cwd: string | undefined, home: stri
   };
 
   const writes: ShellWrite[] = [];
-  const add = (word: Word | string, append: boolean, content?: string) => {
+  const add = (word: Word | string, append: boolean, content?: string, replaced?: { old: string; new: string }) => {
     if (typeof word !== 'string' && word.dynamic) return;
     const raw = typeof word === 'string' ? word : word.v;
     if (raw.endsWith('/') || raw === '.' || raw === '..') return;
     const path = place(raw);
     if (!path) return;
     const seen = writes.find((x) => x.path === path);
-    if (seen) { if (!append) seen.append = false; return; }
-    writes.push({ path, append, ...(content !== undefined ? { content } : {}) });
+    if (seen) {
+      if (!append) seen.append = false;
+      // A second write to the same file: its edits add up, and one unreadable write makes both unknown.
+      const merged = seen.replaced && replaced ? { old: `${seen.replaced.old}\n${replaced.old}`, new: `${seen.replaced.new}\n${replaced.new}` } : undefined;
+      if (merged) seen.replaced = merged;
+      else delete seen.replaced;
+      return;
+    }
+    writes.push({ path, append, ...(content !== undefined ? { content } : {}), ...(replaced ? { replaced } : {}) });
   };
 
   for (const cmd of simpleCommands(tokenize(text), bodies)) {
@@ -212,7 +303,7 @@ export function shellWrites(command: string, cwd: string | undefined, home: stri
       const ops = operands(args);
       if (ops.length >= 2) add(ops[ops.length - 1]!, false);
     }
-    if (INTERPRETERS.test(name) && cmd.body) for (const s of scriptWrites(cmd.body)) add(s.path, s.append);
+    if (INTERPRETERS.test(name) && cmd.body) for (const s of scriptWrites(cmd.body)) add(s.path, s.append, undefined, s.replaced);
   }
   return writes;
 }

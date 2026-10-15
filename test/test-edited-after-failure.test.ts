@@ -70,7 +70,7 @@ test('flags when assertions are removed', () => {
 
   const flags = detectTestEditedAfterFailure(events);
   assert.equal(flags.length, 1);
-  assert.match(flags[0]?.detail ?? '', /5 -> 2/);
+  assert.match(flags[0]?.detail ?? '', / 3 assertions removed overall\./);
 });
 
 test('flags when assertion counts are unknown (cannot prove it was additive)', () => {
@@ -124,7 +124,7 @@ test('repeated edits to one file in one window produce a single flag', () => {
   const flags = detectTestEditedAfterFailure(events);
   assert.equal(flags.length, 1);
   // The span should reflect the whole window, not just the first edit.
-  assert.match(flags[0]?.detail ?? '', /5 -> 2/);
+  assert.match(flags[0]?.detail ?? '', / 3 assertions removed overall\./);
 });
 
 test('a second failure after a pass opens a new window', () => {
@@ -200,7 +200,7 @@ test('a changed assertion count is still shown', () => {
     cmd('c2', '09:02', 'npm test', 'pass'),
   ]);
 
-  assert.match(flags[0]?.detail ?? '', /Assertion count 2 -> 1/);
+  assert.match(flags[0]?.detail ?? '', / 1 assertion removed overall\./);
 });
 
 // Shell writes reach the detector as edit events, expanded from the command
@@ -269,7 +269,7 @@ test('several edits are counted, and a failure that never passed says so', () =>
     edit('e2', '2026-10-03T09:05:00Z', 'src/a.test.ts', 2, 1),
   ]);
 
-  assert.equal(flags[0]?.detail, '`npm test` failed at 09:00; the test was changed 2 times with the Edit tool, first 2 min later; it has not passed since. Assertion count 3 -> 1.');
+  assert.equal(flags[0]?.detail, '`npm test` failed at 09:00; the test was changed 2 times with the Edit tool, first 2 min later; it has not passed since. 2 assertions removed overall.');
 });
 
 // Seen on a real PR: the same check failed, the test was rewritten, it failed
@@ -331,4 +331,56 @@ test('when a different check fails next, the flag says that instead of guessing'
   assert.equal(flags.length, 1);
   assert.match(flags[0]?.detail ?? '', /it did not pass again before `uv run pytest -q tests\/test_other\.py` failed at 03:12\.$/);
   assert.doesNotMatch(flags[0]?.detail ?? '', /has not passed since/);
+});
+
+test('a scripted edit that deletes an assertion after a failure says so in the flag', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:12:00Z'),
+    { kind: 'command', id: 'w1', at: '2026-10-15T03:12:10Z', command: 'python3 - <<EOF\nx\nEOF', classification: 'other', outcome: 'pass',
+      writes: [{ path: 'tests/test_import_validate.py', assertionsBefore: 2, assertionsAfter: 1 }] },
+    pass('c2', '2026-10-15T03:12:20Z'),
+  ]));
+
+  assert.match(flags[0]?.detail ?? '', / 1 assertion removed overall\.$/);
+});
+
+// Seen on a real session: two scripted edits to one test file, +1 assertion
+// (4 -> 5) and then 0 -> 0. Comparing the first edit's "before" with the last
+// edit's "after" printed "Assertion count 4 -> 0", a removal that never
+// happened. Counts are summed over the episode and reported as the net change.
+const scripted = (id: string, at: string, before?: number, after?: number) =>
+  ({ kind: 'command' as const, id, at, command: 'python3 - <<EOF\nx\nEOF', classification: 'other' as const, outcome: 'pass' as const,
+    writes: [{ path: 'tests/test_import_validate.py', ...(before !== undefined ? { assertionsBefore: before } : {}), ...(after !== undefined ? { assertionsAfter: after } : {}) }] });
+
+test('edits to different parts of a test are summed, so a net gain is not reported as a removal', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T02:09:00Z'),
+    scripted('w1', '2026-10-15T02:09:22Z', 4, 5),
+    scripted('w2', '2026-10-15T02:09:27Z', 0, 0),
+    pass('c2', '2026-10-15T02:09:40Z'),
+  ]));
+
+  assert.deepEqual(flags, [], 'a net gain of assertions is purely additive');
+});
+
+test('a net loss is reported as how many assertions were removed overall', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T02:09:00Z'),
+    scripted('w1', '2026-10-15T02:09:22Z', 3, 2),
+    scripted('w2', '2026-10-15T02:09:27Z', 1, 0),
+    pass('c2', '2026-10-15T02:09:40Z'),
+  ]));
+
+  assert.match(flags[0]?.detail ?? '', / 2 assertions removed overall\.$/);
+});
+
+test('with some edits unreadable, a removal in the readable ones is still said, as only that', () => {
+  const flags = detectTestEditedAfterFailure(expandWrites([
+    fail('c1', '2026-10-15T03:12:00Z'),
+    scripted('w1', '2026-10-15T03:12:47Z'),
+    scripted('w2', '2026-10-15T03:12:57Z', 2, 1),
+    pass('c2', '2026-10-15T03:13:10Z'),
+  ]));
+
+  assert.match(flags[0]?.detail ?? '', / The edits pdl could read removed 1 assertion\.$/);
 });

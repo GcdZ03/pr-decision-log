@@ -107,3 +107,84 @@ test('a variable reassigned between writes names each file in turn', () => {
 
   assert.deepEqual(paths(script), ['/w/repo/src/testing.py', '/w/repo/tests/test_salesforce.py']);
 });
+
+// Agents edit with scripts of `s = s.replace(old, new)`. Their old and new
+// texts are literals in the command, so the assertions they remove or add can
+// be counted the way an Edit tool edit's old_string/new_string are. A real PR
+// deleted an assertion this way and the log could only say "written from the
+// shell".
+
+const replaced = (command: string) => shellWrites(command, CWD).map((w) => [w.path, w.replaced]);
+
+test('a scripted replace records the old and new text for the file it writes', () => {
+  const script = [
+    "python3 - <<'EOF'",
+    "p='tests/test_rank.py'",
+    's=open(p).read()',
+    "old='''    assert ranked == [0.01, 0.99]",
+    '    # wrong direction: the fit is weak',
+    "    assert ranked[1] < CONFIDENT",
+    "'''",
+    "new='''    assert ranked == [0.01, 0.99]",
+    "'''",
+    's=s.replace(old,new)',
+    "open(p,'w').write(s)",
+    'EOF',
+  ].join('\n');
+
+  const [w] = shellWrites(script, CWD);
+  assert.equal(w?.path, '/w/repo/tests/test_rank.py');
+  assert.match(w?.replaced?.old ?? '', /assert ranked\[1\] < CONFIDENT/);
+  assert.doesNotMatch(w?.replaced?.new ?? '', /CONFIDENT/);
+});
+
+test('inline literals, several replaces and double-quoted triple strings all count', () => {
+  const script = [
+    "python3 - <<'EOF'",
+    "p='tests/test_a.py'; s=open(p).read()",
+    "s=s.replace('assert a == 1', 'assert a == 2')",
+    's=s.replace("""assert b""", """assert b\nassert c""")',
+    "open(p,'w').write(s)",
+    'EOF',
+  ].join('\n');
+
+  const [w] = shellWrites(script, CWD);
+  assert.equal(w?.replaced?.old, 'assert a == 1\nassert b');
+  assert.equal(w?.replaced?.new, 'assert a == 2\nassert b\nassert c');
+});
+
+test('each file in a script gets only the replaces made before its own write', () => {
+  const script = [
+    "python3 - <<'EOF'",
+    "p='src/a.py'; s=open(p).read(); s=s.replace('x', 'y'); open(p,'w').write(s)",
+    "p='tests/test_b.py'; s=open(p).read(); s=s.replace('assert q', ''); open(p,'w').write(s)",
+    'EOF',
+  ].join('\n');
+
+  assert.deepEqual(replaced(script), [
+    ['/w/repo/src/a.py', { old: 'x', new: 'y' }],
+    ['/w/repo/tests/test_b.py', { old: 'assert q', new: '' }],
+  ]);
+});
+
+test('a script that changes the text in ways that cannot be read records no texts, rather than half', () => {
+  for (const middle of [
+    "s=re.sub(r'assert .*', '', s)",
+    "s=s.replace(old_value, 'y')",
+    "s += '\\nassert extra'",
+    "s=sub(s, 'a', 'b')",
+  ]) {
+    const script = ["python3 - <<'EOF'", "p='tests/test_c.py'; s=open(p).read()", "s=s.replace('assert a', 'assert b')", middle, "open(p,'w').write(s)", 'EOF'].join('\n');
+    assert.equal(shellWrites(script, CWD)[0]?.replaced, undefined, middle);
+  }
+});
+
+test('a Node script replace with template literals counts too', () => {
+  const script = "node <<'EOF'\nconst fs = require('fs'); let s = fs.readFileSync('t.test.ts', 'utf8');\ns = s.replace(`expect(a).toBe(1);`, ``);\nfs.writeFileSync('t.test.ts', s);\nEOF";
+
+  assert.deepEqual(shellWrites(script, CWD)[0]?.replaced, { old: 'expect(a).toBe(1);', new: '' });
+});
+
+test('a write with no replace before it records no texts', () => {
+  assert.equal(shellWrites("python3 - <<'EOF'\nopen('a.py','w').write(data)\nEOF", CWD)[0]?.replaced, undefined);
+});

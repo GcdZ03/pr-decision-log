@@ -57,6 +57,8 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
       path: w.path,
       ...(w.append ? { append: true as const } : {}),
       ...(w.content !== undefined && !w.append ? { assertionsAfter: countAssertions(w.content) } : {}),
+      // A scripted replace is counted like an Edit tool edit: what it took out against what it put in.
+      ...(w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {}),
     }));
     const writes = written.length > 0 ? { writes: written } : {};
 

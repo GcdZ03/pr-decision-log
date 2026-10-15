@@ -95,7 +95,7 @@ A second measurement, over 23 sessions, revised it again: the single richest sou
 | A count of every other command | What those commands were |
 | Pass / fail / interrupted | Raw stdout or stderr |
 | Repo-relative file paths, from the PR diff | Absolute paths |
-| Assertion counts before and after | File contents or diffs |
+| How many assertions a test edit removed overall, including edits made by `replace` scripts | File contents or diffs |
 | Sentences the agent stated, labelled `(stated)` | `thinking` blocks (they are empty anyway) |
 | Your answers to the agent's questions, when you picked an offered option | Answers you typed yourself ("Other"): shown only as *answered in the session* |
 | Tool names and pass/fail per check, risky-file categories, line and file counts | Which commands were run to get there, beyond the runner fragment |

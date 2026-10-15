@@ -219,3 +219,14 @@ test('a command that wrote nothing records no writes', () => {
 
   assert.equal(c.writes, undefined);
 });
+
+test('a scripted replace on a test file records assertion counts before and after, never the text', () => {
+  const c = asCommand(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Bash', cwd: '/w/repo',
+    tool_input: { command: "python3 - <<'EOF'\np='tests/test_r.py'; s=open(p).read()\ns=s.replace('''    assert x == secretValue\n    assert y\n''', '''    assert x == secretValue\n''')\nopen(p,'w').write(s)\nEOF" },
+    tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.deepEqual(c.writes, [{ path: '/w/repo/tests/test_r.py', assertionsBefore: 2, assertionsAfter: 1 }]);
+  assert.doesNotMatch(JSON.stringify(c), /"writes".*secretValue.*\]\}$/);
+});
