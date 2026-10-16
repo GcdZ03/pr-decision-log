@@ -1561,8 +1561,6 @@ var MARKER_START = "<!-- pdl:start";
 var MARKER_END = "<!-- pdl:end -->";
 var VISIBLE_ITEMS = 3;
 var LISTED_PATHS = 3;
-var LISTED_FILES = 100;
-var SHORT_FILES = 30;
 var LISTED_STRAY = 10;
 var SCOPE = "Scope";
 var CONFIRMED = "Decisions you confirmed";
@@ -1586,7 +1584,6 @@ var WARNING_ORDER = [
   "NO_TEST_RUN"
 ];
 var MARK = { pass: "\u2713", fail: "\u2717 (failed, not re-run)", interrupted: "\u2717 (interrupted)", unknown: "?" };
-var KIND_PREFIX = { decision: "", assumption: "Assumption: ", open_item: "Open item: " };
 var code = (s) => s.includes("`") ? `\`\`${s}\`\`` : `\`${s}\``;
 var cell = (s) => s.replace(/\|/g, "\\|");
 var hhmm2 = (iso) => /T(\d{2}:\d{2})/.exec(iso)?.[1] ?? iso;
@@ -1617,7 +1614,7 @@ function checksLine(log) {
 }
 function contextLine(log) {
   const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(" \xB7 ");
-  return `${never ? `**Never run:** ${never} \xB7 ` : ""}Intent: see the PR description.`;
+  return never ? `**Never run:** ${never}` : "";
 }
 function lookHere(log) {
   const warnings = log.flags.filter((f) => f.severity === "warn");
@@ -1637,7 +1634,6 @@ function scopeLines(log, s) {
   const first = `+${num(s.added)} \u2212${num(s.removed)} lines \xB7 ${count2(s.files, "file")}` + (statuses.length ? ` (${statuses.join(", ")})` : "") + (areas ? ` \xB7 ${areas}` : "");
   const second = [
     s.testsChanged > 0 ? `Tests: ${count2(s.testsChanged, "file")} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ""}` : "",
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${fileRef(log, l.path)} (${count2(l.lines, "line")})`).join(", ")}` : "",
     log.coverage && log.coverage.untested.length > 0 ? `no matching test change: ${count2(log.coverage.untested.length, "source file")}` : ""
   ].filter(Boolean).join(" \xB7 ");
   return second ? [first, second] : [first];
@@ -1648,36 +1644,25 @@ function capped(items, restInDetails) {
   return [...items.slice(0, VISIBLE_ITEMS), restInDetails ? `- *\u2026and ${rest} more in the details below.*` : `- *\u2026and ${rest} more, cut to fit the PR body.*`];
 }
 var LEVELS = [
-  { files: LISTED_FILES, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: SHORT_FILES, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "failing", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "failing", stated: false, extras: true, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: false },
-  { stated: false, extras: false, moreLook: false, moreConfirmed: false }
+  { checks: true, extras: true, moreLook: true, moreConfirmed: true },
+  { checks: true, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: false },
+  { checks: false, extras: false, moreLook: false, moreConfirmed: false }
 ];
 function details(log, moreLook, moreConfirmed, level) {
   const parts = [];
   const summary = [];
-  const checks = log.checks.filter((c) => !c.fixer);
-  const fixers = log.checks.filter((c) => c.fixer);
-  if (checks.length > 0 && level.checks) {
-    const shown = level.checks === "all" ? checks : checks.filter((c) => c.last !== "pass");
-    const rows = shown.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
-    const table = rows.length > 0 ? `
+  const failed = log.checks.filter((c) => !c.fixer && c.failures > 0);
+  if (failed.length > 0 && level.checks) {
+    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
+    parts.push(`#### Checks that failed
 
 | Check | Runs | Failures | Last result | Last run |
 | --- | --- | --- | --- | --- |
-${rows.join("\n")}` : "";
-    const passed = checks.length - shown.length;
-    parts.push(`#### Checks${table}${passed > 0 ? `
-
-*${count2(passed, rows.length > 0 ? "more check" : "check")} passed on ${passed === 1 ? "its" : "their"} last run.*` : ""}`);
-    const runs = count2(checks.reduce((n, c) => n + c.runs, 0), "run");
-    summary.push(`${level.checks === "all" ? "every check" : "checks"} (${checks.length} distinct, ${runs})`);
+${rows.join("\n")}`);
+    summary.push(`checks that failed (${failed.length})`);
   }
-  if (fixers.length > 0 && level.extras) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ""}`).join(", ")}`);
   if (moreLook.length > 0 && level.moreLook) {
     parts.push(`#### More to look at
 ${moreLook.join("\n")}`);
@@ -1694,38 +1679,16 @@ ${moreConfirmed.join("\n")}`);
 ${notes.map((f) => flagLine(log, f, true)).join("\n")}`);
     summary.push(`notes (${notes.length})`);
   }
-  const stated = log.decisions.filter((d) => d.confidence !== "confirmed_by_human");
-  if (stated.length > 0 && level.stated) {
-    parts.push(`#### Stated by the agent
-${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ""}${d.text} *(stated)*`).join("\n")}`);
-    summary.push(`stated by the agent (${stated.length})`);
-  }
   const cov = log.coverage;
   if (cov && (cov.pairs.length > 0 || cov.untested.length > 0) && level.extras) {
     const pairs = cov.pairs.map((p) => `- ${code(p.source)} \u2194 ${p.tests.map(code).join(", ")}`);
     const untested = cov.untested.length > 0 ? `Changed with no matching test change: ${paths(cov.untested, LISTED_STRAY)}` : "";
     parts.push(`#### Code and tests${pairs.length ? `
 ${pairs.join("\n")}` : ""}${untested ? `${pairs.length ? "\n\n" : "\n"}${untested}` : ""}`);
-  }
-  const files = log.changes.filter((c) => c.status !== "not in diff");
-  if (files.length > 0 && level.files !== void 0) {
-    const listed2 = Math.min(files.length, level.files);
-    const rows = files.slice(0, listed2).map((c) => {
-      const tags = [...c.status && c.status !== "modified" ? [c.status] : [], ...c.role === "test" ? ["test"] : []];
-      return `- ${code(c.file)}${tags.length ? ` (${tags.join(", ")})` : ""}`;
-    });
-    const rest = files.length - listed2;
-    const tail = listed2 === 0 ? `*${count2(files.length, "file")}; see the Files changed tab.*` : rest > 0 ? `*and ${count2(rest, "more file")}${level.files === LISTED_FILES ? "" : "; see the Files changed tab"}.*` : "";
-    parts.push(`#### Files${rows.length ? `
-${rows.join("\n")}` : ""}${tail ? `${rows.length ? "\n\n" : "\n"}${tail}` : ""}`);
-    summary.push(`${rest === 0 ? "every file" : "files"} (${files.length})`);
+    summary.push("code and tests");
   }
   if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count2(log.strayWrites.length, "file")}: ${paths(log.strayWrites, LISTED_STRAY)}`);
-  }
-  if (log.otherCommands > 0 && level.extras) {
-    parts.push(`${count2(log.otherCommands, "other command")} (file writes, searches, git) not listed.`);
-    summary.push(count2(log.otherCommands, "other command"));
   }
   if (parts.length === 0) return "";
   return `
@@ -1752,7 +1715,7 @@ function render(log, options = {}) {
 `;
   const from = log.sessions.length > 1 ? `${log.sessions.length} agent sessions` : "the agent session";
   const footer = `
-<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool}) \xB7 Redaction: ${count2(log.redaction.hits, "rule")} applied.</sub>
+<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool})</sub>
 ${MARKER_END}
 `;
   const look = lookHere(log);
@@ -1764,9 +1727,10 @@ ${MARKER_END}
     const detailsText = details(log, moreLook, moreConfirmed, level);
     const detailsCut = levelIndex === 0 || !anyDetails ? "none" : detailsText ? "some" : "all";
     const note = cutNote(detailsCut, dropped);
+    const second = [contextLine(log), note].filter(Boolean).join(" ");
     const blocks2 = [`
-${checksLine(log)}
-${contextLine(log)}${note ? ` ${note}` : ""}
+${checksLine(log)}${second ? `
+${second}` : ""}
 `];
     if (confirmed.length > 0 && !dropped.includes(CONFIRMED)) {
       blocks2.push(`

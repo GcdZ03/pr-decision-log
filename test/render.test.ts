@@ -41,7 +41,7 @@ test('fixers are not checks, and a session with only fixers ran none', () => {
   const md = render(buildLog([run('uv run ruff check --fix .')], meta));
 
   assert.match(md, /\*\*Checks:\*\* none were run\./);
-  assert.match(md, /Auto-fixes: `uv run ruff check --fix \.`/);
+  assert.doesNotMatch(md, /Auto-fixes|ruff/, 'an auto-fix is neither a check nor worth a line');
 });
 
 test('an interrupted last run is never a tick', () => {
@@ -50,10 +50,11 @@ test('an interrupted last run is never a tick', () => {
   assert.match(md, /pytest ✗ \(interrupted\)/);
 });
 
-test('never-run gaps and the intent pointer share the second line', () => {
+test('never-run gaps are the second line, with no boilerplate beside them', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: fileDiff('Dockerfile') }));
 
-  assert.match(md, /\n\*\*Never run:\*\* docker build \(a Docker file changed\) · Intent: see the PR description\.\n/);
+  assert.match(md, /\n\*\*Never run:\*\* docker build \(a Docker file changed\)\n/);
+  assert.doesNotMatch(render(buildLog([run('npm test')], meta)), /Intent: see/);
 });
 
 test('risky files are one bullet under Look here, grouped by category', () => {
@@ -62,12 +63,12 @@ test('risky files are one bullet under Look here, grouped by category', () => {
   assert.match(md, /- \*\*Privileged or risky files:\*\* CI and automation: `\.github\/workflows\/ci\.yml` · dependencies: `uv\.lock`/);
 });
 
-test('scope gives size, spread, tests and the largest files', () => {
+test('scope gives size, spread and tests', () => {
   const md = render(buildLog([run('npm test')], {
     ...meta, diff: [fileDiff('services/api/src/parse.py', 40, 'added'), fileDiff('services/api/tests/test_parse.py', 20, 'added'), fileDiff('README.md', 2)].join('\n'),
   }));
 
-  assert.match(md, /### Scope\n\+62 −0 lines · 3 files \(2 added\) · services\/api · \(root\)\nTests: 1 file changed \(1 added\) · Largest: `services\/api\/src\/parse\.py` \(40 lines\), `services\/api\/tests\/test_parse\.py` \(20 lines\)\n/);
+  assert.match(md, /### Scope\n\+62 −0 lines · 3 files \(2 added\) · services\/api · \(root\)\nTests: 1 file changed \(1 added\)\n/);
 });
 
 test('with no diff the log still shows checks and look-here, and no scope', () => {
@@ -84,11 +85,17 @@ test('empty blocks are omitted, with no "none" lines', () => {
   assert.doesNotMatch(md, /### Decisions you confirmed|### Look here|### Scope|none recorded/i);
 });
 
-test('the details name what they hold, with counts', () => {
-  const md = render(buildLog([run('npm test'), run('npm test'), run('ls'), run('grep -n x src')], { ...meta, diff: fileDiff('src/a.ts') }));
+test('the details list only checks that failed, and nothing a reviewer sees elsewhere', () => {
+  const md = render(buildLog([run('npm test', 'fail'), run('npm test'), run('pnpm lint'), run('ls'), run('grep -n x src')], { ...meta, diff: fileDiff('src/a.ts') }));
 
-  assert.match(md, /<details><summary>every check \(1 distinct, 2 runs\) · every file \(1\) · 2 other commands<\/summary>/);
-  assert.match(md, /\| `npm test` \| 2 \| 0 \| pass \| \d\d:\d\d \|/);
+  assert.match(md, /<details><summary>checks that failed \(1\)[^<]*<\/summary>/);
+  assert.match(md, /\| `npm test` \| 2 \| 1 \| pass \| \d\d:\d\d \|/);
+  assert.doesNotMatch(md, /`pnpm lint` \|/, 'a check that only passed is the tick above, not a row');
+  assert.doesNotMatch(md, /#### Files|other command|every file|Redaction/);
+});
+
+test('a session whose checks all passed first time has no checks table', () => {
+  assert.doesNotMatch(render(buildLog([run('npm test'), run('npm test')], meta)), /Checks that failed/);
 });
 
 test('stray writes are listed inside the details', () => {
@@ -127,9 +134,13 @@ test('a huge PR keeps the visible part within budget and the body within maxChar
 });
 
 test('a tight budget drops the details first, with a note', () => {
-  const md = render(buildLog([run('npm test')], { ...meta, diff: Array.from({ length: 80 }, (_, i) => fileDiff(`src/f${i}.ts`)).join('\n') }), { maxChars: 900 });
+  const log = buildLog([run('npm test')], { ...meta, diff: Array.from({ length: 80 }, (_, i) => fileDiff(`src/f${i}.ts`)).join('\n') });
+  const max = render(log, { maxChars: 1_000_000 }).length - 1;
+  const md = render(log, { maxChars: max });
 
-  assert.ok(md.length <= 900, `body is ${md.length} chars`);
+  assert.ok(md.length <= max, `body is ${md.length} chars`);
+  assert.doesNotMatch(md, /<details>/, 'the details went first');
+  assert.match(md, /### Scope/, 'the visible blocks stayed');
   assert.match(md, /cut to fit the PR body/);
   assert.match(md, /\*\*Checks \(last run\):\*\*/, 'the verdict survives');
   assert.ok(md.trimEnd().endsWith('<!-- pdl:end -->'));
@@ -138,9 +149,9 @@ test('a tight budget drops the details first, with a note', () => {
 test('a path with a pipe or a backtick cannot break the table or the code span', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: [fileDiff('src/we|ird.ts'), fileDiff('src/tick`name.ts')].join('\n') }));
 
-  // A list item is not a table row, so the pipe stays as written; GitHub would show a backslash.
-  assert.ok(md.includes('\n- `src/we|ird.ts`\n'), md);
-  assert.match(md, /- ``src\/tick`name\.ts``/);
+  // Outside a table the pipe stays as written; GitHub would show a backslash.
+  assert.ok(md.includes('`src/we|ird.ts`') && !md.includes('we\\|ird'), md);
+  assert.match(md, /``src\/tick`name\.ts``/);
 });
 
 test('raw command output never reaches the markdown', () => {
@@ -186,42 +197,32 @@ function assertPointersResolve(md: string) {
   if (!md.includes('<details>')) assert.doesNotMatch(md, /in the details below/, md);
 }
 
-test('a large PR at the default budget shrinks the details, and every pointer still resolves', () => {
+// Since the file list, passing checks and other repeats left the details, a
+// 305-file PR fits the default budget whole; it used to need cutting.
+test('a large PR fits the default budget without cuts, and every pointer resolves', () => {
   const md = render(bigLog(300));
 
   assert.ok(md.length <= 12_000, `body is ${md.length} chars`);
   assert.ok(visibleLines(md) <= VISIBLE_LINE_BUDGET, `visible part is ${visibleLines(md)} lines`);
   assert.ok(md.startsWith('<!-- pdl:start') && md.trimEnd().endsWith('<!-- pdl:end -->'));
-  assert.ok(md.includes('<details>'), 'the details shrink before they go');
+  assert.ok(md.includes('<details>'));
   assertPointersResolve(md);
   assert.ok(md.includes(RISKY), 'the risky-files bullet is reachable');
-  assert.match(md, /cut to fit the PR body/);
-  assert.match(md, /### Scope/, 'visible blocks are kept while the details can shrink');
+  assert.doesNotMatch(md, /cut to fit the PR body/);
+  assert.match(md, /### Scope/);
 });
 
-test('the Files list shrinks to 30, then to a count, before anything else goes', () => {
+test('under budget pressure the reading aids go first, then the failed-checks table, then the pointer blocks', () => {
   const full = render(bigLog(300), { maxChars: 1_000_000 });
-  assert.match(full, /\*and 205 more files\.\*/);
-
-  const thirty = render(bigLog(300), { maxChars: full.length - 1 });
-  assert.match(thirty, /\*and 275 more files; see the Files changed tab\.\*/);
-  assert.match(thirty, /\| `uv run pytest services\/api\/tests\/ingestion\/test_stage_1\.py -q` \|/, 'passing checks still listed');
-
-  const counted = render(bigLog(300), { maxChars: thirty.length - 1 });
-  assert.match(counted, /#### Files\n\*305 files; see the Files changed tab\.\*/);
-});
-
-test('then the checks table keeps only checks whose last run did not pass, then the stated block goes', () => {
-  const files = render(bigLog(300), { maxChars: 1_000_000 });
+  assert.match(full, /#### Code and tests/);
   const sizes: string[] = [];
-  for (let max = files.length; max > 2_000; max -= 50) sizes.push(render(bigLog(300), { maxChars: max }));
-  const failingOnly = sizes.find((md) => /passed on their last run/.test(md));
-  assert.ok(failingOnly, 'a budget where only failing checks are listed');
-  assert.match(failingOnly, /\| `uv run pytest services\/api\/tests\/ingestion\/test_stage_0\.py -q` \| 1 \| 1 \| fail \|/);
-  assert.doesNotMatch(failingOnly, /test_stage_1\.py -q` \|/);
-  assert.match(failingOnly, /\*16 more checks passed on their last run\.\*/);
-  assert.match(failingOnly, /#### Stated by the agent/, 'the stated block outlasts the passing rows');
-  assert.ok(sizes.some((md) => md.includes('<details>') && !md.includes('#### Stated by the agent')), 'the stated block goes before the pointed-to blocks');
+  for (let max = full.length; max > 1_500; max -= 40) sizes.push(render(bigLog(300), { maxChars: max }));
+
+  const noAids = sizes.find((md) => md.includes('#### Checks that failed') && !md.includes('#### Code and tests'));
+  assert.ok(noAids, 'a budget with the failed checks but no reading aids');
+  const noChecks = sizes.find((md) => md.includes('#### More to look at') && !md.includes('#### Checks that failed'));
+  assert.ok(noChecks, 'a budget with the pointer blocks but no checks table');
+  assert.ok(!sizes.some((md) => md.includes('#### Code and tests') && !md.includes('#### Checks that failed')), 'aids never outlast the checks table');
 });
 
 test('every budget keeps the visible part within 15 lines, pointers honest, and blocks dropped in order', () => {
@@ -236,7 +237,7 @@ test('every budget keeps the visible part within 15 lines, pointers honest, and 
     if (has('Scope')) assert.ok(has('Decisions you confirmed') && has('Look here'), `${label}: Scope outlived a block it should not`);
     if (has('Decisions you confirmed')) assert.ok(has('Look here'), `${label}: Decisions outlived Look here`);
     if (md.length > 600) assert.match(md, /\*\*Checks \(last run\):\*\*/, `${label}: the verdict survives`);
-    if (!has('Scope') && md.includes('Intent: see the PR description.')) assert.match(md, /the Scope(?: and [\w ]+)? blocks? (?:was|were) cut|the Scope, /, `${label}: the note names the Scope block`);
+    if (!has('Scope') && md.includes('### Look here')) assert.match(md, /the Scope(?: and [\w ]+)? blocks? (?:was|were) cut|the Scope, /, `${label}: the note names the Scope block`);
   }
 });
 
@@ -268,8 +269,8 @@ test('the summary counts the decisions a visible pointer sends the reader to', (
 test('counts are singular when there is one', () => {
   const md = render(buildLog([run('npm test')], { ...meta, diff: [fileDiff('src/a.ts', 1), fileDiff('src/b.ts', 2)].join('\n') }));
 
-  assert.match(md, /Largest: `src\/b\.ts` \(2 lines\), `src\/a\.ts` \(1 line\)/);
-  assert.match(md, /<summary>every check \(1 distinct, 1 run\)/);
+  assert.match(md, /· 2 files ·/);
+  assert.match(render(buildLog([run('npm test', 'fail'), run('npm test')], meta)), /<summary>checks that failed \(1\)/);
 });
 
 // Reviewer shortcuts: a link from each flagged file to its diff, whether the
@@ -313,7 +314,7 @@ test('a test-edit flag says whether the test was added by this PR or already exi
 test('scope counts changed code with no matching test change, and the details pair code with tests', () => {
   const md = render(buildLog(flagged('test_new'), { ...meta, diff: SHORTCUT_DIFF }));
 
-  assert.match(md, /### Scope\n.*\nTests: 1 file changed .* · no matching test change: 1 source file\n/);
+  assert.match(md, /### Scope\n.*\nTests: 1 file changed(?: .*)? · no matching test change: 1 source file\n/);
   assert.match(md, /#### Code and tests\n- `src\/v\.py` ↔ `tests\/test_v\.py`\n\nChanged with no matching test change: `src\/auth\.py`/);
 });
 

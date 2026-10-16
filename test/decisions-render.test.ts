@@ -26,22 +26,15 @@ test('a secret in a stated decision is redacted before it can be published', () 
   assert.ok(!JSON.stringify(log).includes('AKIAIOSFODNN7EXAMPLE'), 'a secret survived into the log');
 });
 
-test('confirmed decisions are visible, and stated claims are inside the details', () => {
+test("confirmed decisions are visible, and the agent's own stated reasons are not published at all", () => {
   const md = render(buildLog([cmd], meta, [
     dec({ text: 'Base: main', source: 'human-answer', confidence: 'confirmed_by_human' }),
     dec({}),
+    dec({ kind: 'assumption', text: 'Assuming one session per PR.' }),
   ]));
 
   assert.match(md, /### Decisions you confirmed\n- Base: main\n/);
-  assert.ok(md.indexOf('#### Stated by the agent') > md.indexOf('<details>'), 'stated claims escaped the details');
-  assert.match(md, /- Retry at the job level because the client is shared\. \*\(stated\)\*/);
-});
-
-test('assumptions and open items are labelled inside the stated claims', () => {
-  const md = render(buildLog([cmd], meta, [dec({ kind: 'assumption', text: 'Assuming one session per PR.' }), dec({ kind: 'open_item', text: 'TODO: comment mode.' })]));
-
-  assert.match(md, /- Assumption: Assuming one session per PR\. \*\(stated\)\*/);
-  assert.match(md, /- Open item: TODO: comment mode\. \*\(stated\)\*/);
+  assert.doesNotMatch(md, /Retry at the job level|Assuming one session|Stated by the agent|\(stated\)/);
 });
 
 test('no decisions means no decision headings at all, which is the common case', () => {
