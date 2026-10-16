@@ -70,6 +70,55 @@ export function testOrigin(diff: string, path: string, testName: string): 'added
   return inNew && !inOld ? 'added' : 'existing';
 }
 
+export type AssertionChange = { removed: string; added?: string };
+
+const MAX_QUOTE = 100;
+const quote = (line: string): string => {
+  const t = line.trim();
+  return t.length > MAX_QUOTE ? `${t.slice(0, MAX_QUOTE - 1)}…` : t;
+};
+
+/**
+ * What the diff did to one test file's assertions: each removed assertion,
+ * paired with the assertion that replaced it in the same block of removed
+ * and added lines when there is one. Lines are quoted only from the diff,
+ * which the PR already shows.
+ */
+export function assertionChanges(diff: string, path: string): AssertionChange[] {
+  const out: AssertionChange[] = [];
+  let inFile = false;
+  let inHunk = false;
+  let removed: string[] = [];
+  let added: string[] = [];
+  const flush = () => {
+    const r = removed.filter((l) => countAssertions(l) > 0);
+    const a = added.filter((l) => countAssertions(l) > 0);
+    r.forEach((line, i) => out.push({ removed: quote(line), ...(a[i] !== undefined ? { added: quote(a[i]!) } : {}) }));
+    removed = [];
+    added = [];
+  };
+  const matches = (p: string) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`);
+
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      flush();
+      inFile = matches(/^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? '');
+      inHunk = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (line.startsWith('@@')) { flush(); inHunk = true; continue; }
+    if (!inHunk) continue;
+    if (line.startsWith('-')) {
+      if (added.length > 0) flush(); // A new removal after additions starts a new block.
+      removed.push(line.slice(1));
+    } else if (line.startsWith('+')) added.push(line.slice(1));
+    else flush();
+  }
+  flush();
+  return out;
+}
+
 export type FileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 
 export type ChangedFile = { path: string; status: FileStatus; added: number; removed: number; binary: boolean };

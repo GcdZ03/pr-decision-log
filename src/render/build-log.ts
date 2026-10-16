@@ -14,7 +14,7 @@ import { summariseChecks, type Check } from '../review/checks.ts';
 import { neverRun, type NeverRun } from '../review/never-run.ts';
 import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
 import { summariseScope, type Scope } from '../review/scope.ts';
-import { analyzeDiff, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
+import { analyzeDiff, assertionChanges, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
 import { isSourceCode, pairTests, type Coverage } from '../review/coverage.ts';
 
 export type Verification = {
@@ -229,6 +229,11 @@ export function buildLog(
       detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
       ...(f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {}),
       ...(origin ? { origin } : {}),
+      ...(() => {
+        const changes = meta.diff && f.code === 'TEST_EDITED_AFTER_FAILURE' ? assertionChanges(meta.diff, file) : [];
+        const safe = (t: string) => clean(scrubPaths(t, meta.repoRoot));
+        return changes.length > 0 ? { assertionDiff: changes.map((c) => ({ removed: safe(c.removed), ...(c.added !== undefined ? { added: safe(c.added) } : {}) })) } : {};
+      })(),
       ...(origin === 'mixed' ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}),
     };
   });

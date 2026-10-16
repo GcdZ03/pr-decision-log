@@ -349,3 +349,13 @@ test('commits outside the recorded sessions are named on the second line, linked
 
   assert.match(render(log), new RegExp(`\\*\\*Not covered by this log:\\*\\* 1 commit made outside the recorded sessions: \\[\`ccccccc\`\\]\\(${PR_URL}/commits/${'c'.repeat(40)}\\)`));
 });
+
+test('a test-edit flag quotes the assertion changes the diff shows', () => {
+  const diff = [
+    'diff --git a/tests/test_v.py b/tests/test_v.py', '--- a/tests/test_v.py', '+++ b/tests/test_v.py', '@@ -1,3 +1,3 @@',
+    ' def test_old():', '-    assert order == [MAR, OCT]', '+    assert order == [OCT, MAR]',
+  ].join('\n');
+
+  const md = render(buildLog(flagged('test_old'), { ...meta, diff }));
+  assert.match(md, /it passed at 03:13\. 1 assertion removed overall\. Diff: `assert order == \[MAR, OCT\]` → `assert order == \[OCT, MAR\]`\.\n/);
+});

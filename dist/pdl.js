@@ -172,16 +172,16 @@ function stripHeredocs(command2) {
 }
 function blankQuotes(text) {
   let out = "";
-  let quote;
+  let quote2;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quote) {
-      if (c === "\\" && quote === '"') {
+    if (quote2) {
+      if (c === "\\" && quote2 === '"') {
         i++;
         continue;
       }
-      if (c === quote) {
-        quote = void 0;
+      if (c === quote2) {
+        quote2 = void 0;
         out += c;
       }
       continue;
@@ -191,7 +191,7 @@ function blankQuotes(text) {
       i++;
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    if (c === '"' || c === "'") quote2 = c;
     out += c;
   }
   return out;
@@ -523,8 +523,8 @@ function literalAt(text, i) {
     const end = text.indexOf(triple, j + 3);
     return end < 0 ? void 0 : { value: text.slice(j + 3, end), end: end + 3 };
   }
-  const quote = text[j];
-  if (quote !== "'" && quote !== '"' && quote !== "`") return void 0;
+  const quote2 = text[j];
+  if (quote2 !== "'" && quote2 !== '"' && quote2 !== "`") return void 0;
   let value = "";
   for (j += 1; j < text.length; j++) {
     const c = text[j];
@@ -534,9 +534,9 @@ function literalAt(text, i) {
       j++;
       continue;
     }
-    if (c === quote) return { value, end: j + 1 };
-    if (c === "\n" && quote !== "`") return void 0;
-    if (quote === "`" && c === "$" && text[j + 1] === "{") return void 0;
+    if (c === quote2) return { value, end: j + 1 };
+    if (c === "\n" && quote2 !== "`") return void 0;
+    if (quote2 === "`" && c === "$" && text[j + 1] === "{") return void 0;
     value += c;
   }
   return void 0;
@@ -970,7 +970,7 @@ function scrubPaths(text, repoRoot2) {
     const forms = [.../* @__PURE__ */ new Set([`/private${root}`, root, root.replace(/^\/private\//, "/")])].sort((a, b) => b.length - a.length);
     for (const form of forms) out = out.replace(new RegExp(`(?<![\\w.~/-])${escape(form)}/`, "g"), "");
   }
-  return out.replace(QUOTED_PRIVATE_PATH, (_m, quote, path) => `${quote}${nameOf(path)}${quote}`).replace(WINDOWS_USER_PATH, reduce).replace(PRIVATE_PATH, reduce);
+  return out.replace(QUOTED_PRIVATE_PATH, (_m, quote2, path) => `${quote2}${nameOf(path)}${quote2}`).replace(WINDOWS_USER_PATH, reduce).replace(PRIVATE_PATH, reduce);
 }
 
 // src/events/expand-writes.ts
@@ -1258,6 +1258,48 @@ function testOrigin(diff, path, testName) {
   const inNew = file.added.some((l) => re.test(l));
   return inNew && !inOld ? "added" : "existing";
 }
+var MAX_QUOTE = 100;
+var quote = (line) => {
+  const t = line.trim();
+  return t.length > MAX_QUOTE ? `${t.slice(0, MAX_QUOTE - 1)}\u2026` : t;
+};
+function assertionChanges(diff, path) {
+  const out = [];
+  let inFile = false;
+  let inHunk = false;
+  let removed = [];
+  let added = [];
+  const flush = () => {
+    const r = removed.filter((l) => countAssertions(l) > 0);
+    const a = added.filter((l) => countAssertions(l) > 0);
+    r.forEach((line, i) => out.push({ removed: quote(line), ...a[i] !== void 0 ? { added: quote(a[i]) } : {} }));
+    removed = [];
+    added = [];
+  };
+  const matches = (p) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`);
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      inFile = matches(/^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? "");
+      inHunk = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (line.startsWith("@@")) {
+      flush();
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("-")) {
+      if (added.length > 0) flush();
+      removed.push(line.slice(1));
+    } else if (line.startsWith("+")) added.push(line.slice(1));
+    else flush();
+  }
+  flush();
+  return out;
+}
 function changedFiles(diff) {
   return parse(diff).filter((f) => f.path).map((f) => ({
     path: f.path,
@@ -1525,6 +1567,11 @@ function buildLog(recorded, meta, decisions = []) {
       detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
       ...f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {},
       ...origin ? { origin } : {},
+      ...(() => {
+        const changes2 = meta.diff && f.code === "TEST_EDITED_AFTER_FAILURE" ? assertionChanges(meta.diff, file) : [];
+        const safe = (t) => clean(scrubPaths(t, meta.repoRoot));
+        return changes2.length > 0 ? { assertionDiff: changes2.map((c) => ({ removed: safe(c.removed), ...c.added !== void 0 ? { added: safe(c.added) } : {} })) } : {};
+      })(),
       ...origin === "mixed" ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}
     };
   });
@@ -1620,7 +1667,9 @@ function mixedOrigin(f) {
 function flagLine(log, f, note = false) {
   const where = f.file ? ` ${fileRef(log, f.file)}` : "";
   const origin = f.origin === "mixed" ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? "" : "";
-  return `- **${LABEL[f.code]}**${origin}${note ? " *(note)*" : ""}${where}: ${f.detail}`;
+  const changes = f.assertionDiff ?? [];
+  const diffNote = changes.length === 0 ? "" : ` Diff: ${changes.slice(0, 2).map((c) => c.added !== void 0 ? `${code(c.removed)} \u2192 ${code(c.added)}` : `${code(c.removed)} removed`).join("; ")}${changes.length > 2 ? ` +${changes.length - 2} more` : ""}.`;
+  return `- **${LABEL[f.code]}**${origin}${note ? " *(note)*" : ""}${where}: ${f.detail}${diffNote}`;
 }
 function checksLine(log) {
   const tools = toolStatuses(log.checks);

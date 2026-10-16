@@ -83,7 +83,9 @@ function mixedOrigin(f: Flag): string {
 function flagLine(log: DecisionLog, f: Flag, note = false): string {
   const where = f.file ? ` ${fileRef(log, f.file)}` : '';
   const origin = f.origin === 'mixed' ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? '' : '';
-  return `- **${LABEL[f.code]}**${origin}${note ? ' *(note)*' : ''}${where}: ${f.detail}`;
+  const changes = f.assertionDiff ?? [];
+  const diffNote = changes.length === 0 ? '' : ` Diff: ${changes.slice(0, 2).map((c) => (c.added !== undefined ? `${code(c.removed)} → ${code(c.added)}` : `${code(c.removed)} removed`)).join('; ')}${changes.length > 2 ? ` +${changes.length - 2} more` : ''}.`;
+  return `- **${LABEL[f.code]}**${origin}${note ? ' *(note)*' : ''}${where}: ${f.detail}${diffNote}`;
 }
 
 function checksLine(log: DecisionLog): string {
