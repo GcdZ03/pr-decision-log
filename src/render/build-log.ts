@@ -1,4 +1,4 @@
-import type { TimelineEvent, Outcome } from '../events/types.ts';
+import type { EditEvent, TimelineEvent, Outcome } from '../events/types.ts';
 import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
@@ -14,7 +14,7 @@ import { neverRun, type NeverRun } from '../review/never-run.ts';
 import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
 import { summariseScope, type Scope } from '../review/scope.ts';
 import { analyzeDiff, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
-import { pairTests, type Coverage } from '../review/coverage.ts';
+import { isSourceCode, pairTests, type Coverage } from '../review/coverage.ts';
 
 export type Verification = {
   at: string;
@@ -56,6 +56,8 @@ export type DecisionLog = {
   strayWrites: string[];
   /** Changed code paired with its changed tests, and the code without one. Absent with no diff. */
   coverage?: Coverage;
+  /** Code edited after the last test run, which no test run covered. Absent when none was, or no test ran. */
+  changedAfterTests?: { files: string[]; lastTestAt: string; lastEditAt: string };
   /** The pull request, for links to its files; only ever a github.com pull request URL. */
   prUrl?: string;
   /** Claims, kept in one list with a `kind` and split at render time. */
@@ -172,6 +174,18 @@ export function buildLog(
       ]
     : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
 
+  // Code the agent edited after its last test run was never tested by it. Any
+  // test run counts: a later `npm test` re-verifies what `node --test` did.
+  const testRuns = events.filter((e) => e.kind === 'command' && classifyCommand(e.command) === 'test');
+  const lastTest = testRuns[testRuns.length - 1];
+  const after = lastTest
+    ? events.filter((e): e is EditEvent => e.kind === 'edit' && e.at > lastTest.at
+        && (!meta.repoRoot || insideRepo(e.path, meta.repoRoot)) && isSourceCode(rel(e.path)))
+    : [];
+  const changedAfterTests = lastTest && after.length > 0
+    ? { files: [...new Set(after.map((e) => rel(e.path)))], lastTestAt: lastTest.at, lastEditAt: after.map((e) => e.at).sort().at(-1)! }
+    : undefined;
+
   const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
   const present = fromDiff.filter((f) => f.status !== 'deleted').map((f) => f.path);
   const commandTexts = events.flatMap((e) => (e.kind === 'command' ? [e.command] : []));
@@ -239,6 +253,7 @@ export function buildLog(
     ...(scope ? { scope } : {}),
     strayWrites,
     ...(fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {}),
+    ...(changedAfterTests ? { changedAfterTests } : {}),
     // Links go into the PR body, so only a plain github.com pull request URL is kept.
     ...(meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {}),
     // Model text, so it passes through the same redactor as everything else.

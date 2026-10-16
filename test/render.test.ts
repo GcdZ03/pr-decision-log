@@ -328,3 +328,18 @@ test('when the failing tests are a mix, the label says which test is new and whi
   assert.match(render(buildLog(mixed, { ...meta, diff: SHORTCUT_DIFF })),
     /\*\*Test changed after it failed\*\* \*\(`test_new` added by this PR; `test_old` existed\)\*/);
 });
+
+test('code changed after the last test run is said on the second line, beside never-run gaps', () => {
+  const md = render(buildLog([
+    run('npm test'),
+    { kind: 'edit', id: 'x1', at: '2026-10-03T07:40:00Z', path: '/repo/src/settings.py' },
+  ], { ...meta, diff: fileDiff('Dockerfile') }));
+
+  assert.match(md, /\n\*\*Never run:\*\* docker build \(a Docker file changed\) · \*\*Changed after the last test run:\*\* `src\/settings\.py` \(\d+ (?:min|h) later\)\n/);
+});
+
+test('when stray writes are all the details hold, the summary says so', () => {
+  const log = { ...buildLog([run('npm test')], { ...meta, diff: fileDiff('src/a.ts') }), strayWrites: ['notes/todo.md'], coverage: { pairs: [], untested: [] } };
+
+  assert.match(render(log), /<summary>written but not in the diff \(1\)<\/summary>/);
+});

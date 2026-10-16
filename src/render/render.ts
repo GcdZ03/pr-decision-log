@@ -94,8 +94,24 @@ function checksLine(log: DecisionLog): string {
 
 /** The second verdict line: what the session never checked. Empty when there is nothing to say. */
 function contextLine(log: DecisionLog): string {
+  const parts: string[] = [];
   const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(' · ');
-  return never ? `**Never run:** ${never}` : '';
+  if (never) parts.push(`**Never run:** ${never}`);
+  const stale = log.changedAfterTests;
+  if (stale) {
+    const later = gap(stale.lastTestAt, stale.lastEditAt);
+    parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ''}`);
+  }
+  return parts.join(' · ');
+}
+
+/** A time gap in s, min or h. Empty for an unparseable or negative gap. */
+function gap(from: string, to: string): string {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1000);
+  if (!Number.isFinite(s) || s < 0) return '';
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
 }
 
 function lookHere(log: DecisionLog): string[] {
@@ -196,6 +212,7 @@ function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], 
   }
   if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count(log.strayWrites.length, 'file')}: ${paths(log.strayWrites, LISTED_STRAY)}`);
+    summary.push(`written but not in the diff (${log.strayWrites.length})`);
   }
 
   if (parts.length === 0) return '';

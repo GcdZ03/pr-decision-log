@@ -1414,6 +1414,7 @@ function analyzeDiff(diff, options = {}) {
 import { basename as basename5 } from "node:path";
 var CODE = /\.(?:[cm]?[tj]sx?|py|go|rs|swift|java|kt|rb|php|cs|c|cc|cpp|h|hpp|m|scala|vue|svelte)$/;
 var NOT_UNIT = /(?:^|\/)__init__\.py$|\.d\.ts$/;
+var isSourceCode = (path) => !isTestFile(path) && CODE.test(path) && !NOT_UNIT.test(path);
 var sourceStem = (path) => basename5(path).replace(/\.[^.]+$/, "");
 function language(path) {
   const ext = /\.([^.]+)$/.exec(path)?.[1] ?? "";
@@ -1430,7 +1431,7 @@ function pointsAt(test, source) {
 function pairTests(files) {
   const present = files.filter((f) => f.status !== "deleted");
   const tests = present.filter((f) => isTestFile(f.path)).map((f) => f.path);
-  const sources = present.filter((f) => !isTestFile(f.path) && CODE.test(f.path) && !NOT_UNIT.test(f.path)).map((f) => f.path);
+  const sources = present.filter((f) => isSourceCode(f.path)).map((f) => f.path);
   const pairs = [];
   const untested = [];
   for (const source of sources) {
@@ -1491,6 +1492,10 @@ function buildLog(recorded, meta, decisions = []) {
     // a log, a scratch file or build output, not part of the change.
     ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file) && !viaShellOnly.has(file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
   ] : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
+  const testRuns = events.filter((e) => e.kind === "command" && classifyCommand(e.command) === "test");
+  const lastTest = testRuns[testRuns.length - 1];
+  const after = lastTest ? events.filter((e) => e.kind === "edit" && e.at > lastTest.at && (!meta.repoRoot || insideRepo(e.path, meta.repoRoot)) && isSourceCode(rel(e.path))) : [];
+  const changedAfterTests = lastTest && after.length > 0 ? { files: [...new Set(after.map((e) => rel(e.path)))], lastTestAt: lastTest.at, lastEditAt: after.map((e) => e.at).sort().at(-1) } : void 0;
   const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
   const present = fromDiff.filter((f) => f.status !== "deleted").map((f) => f.path);
   const commandTexts = events.flatMap((e) => e.kind === "command" ? [e.command] : []);
@@ -1547,6 +1552,7 @@ function buildLog(recorded, meta, decisions = []) {
     ...scope ? { scope } : {},
     strayWrites,
     ...fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {},
+    ...changedAfterTests ? { changedAfterTests } : {},
     // Links go into the PR body, so only a plain github.com pull request URL is kept.
     ...meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {},
     // Model text, so it passes through the same redactor as everything else.
@@ -1613,8 +1619,22 @@ function checksLine(log) {
   return `**Checks (last run):** ${tools.map((t) => `${t.tool} ${MARK[t.status]}`).join(" \xB7 ")}`;
 }
 function contextLine(log) {
+  const parts = [];
   const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(" \xB7 ");
-  return never ? `**Never run:** ${never}` : "";
+  if (never) parts.push(`**Never run:** ${never}`);
+  const stale = log.changedAfterTests;
+  if (stale) {
+    const later = gap2(stale.lastTestAt, stale.lastEditAt);
+    parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ""}`);
+  }
+  return parts.join(" \xB7 ");
+}
+function gap2(from, to) {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1e3);
+  if (!Number.isFinite(s) || s < 0) return "";
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
 }
 function lookHere(log) {
   const warnings = log.flags.filter((f) => f.severity === "warn");
@@ -1689,6 +1709,7 @@ ${pairs.join("\n")}` : ""}${untested ? `${pairs.length ? "\n\n" : "\n"}${unteste
   }
   if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count2(log.strayWrites.length, "file")}: ${paths(log.strayWrites, LISTED_STRAY)}`);
+    summary.push(`written but not in the diff (${log.strayWrites.length})`);
   }
   if (parts.length === 0) return "";
   return `

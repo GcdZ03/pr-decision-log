@@ -14,6 +14,9 @@ const CODE = /\.(?:[cm]?[tj]sx?|py|go|rs|swift|java|kt|rb|php|cs|c|cc|cpp|h|hpp|
 /** Code that is rarely tested on its own: package inits and generated type declarations. */
 const NOT_UNIT = /(?:^|\/)__init__\.py$|\.d\.ts$/;
 
+/** Changed code a test could cover: code, not a test, not a package init or generated types. */
+export const isSourceCode = (path: string): boolean => !isTestFile(path) && CODE.test(path) && !NOT_UNIT.test(path);
+
 const sourceStem = (path: string): string => basename(path).replace(/\.[^.]+$/, '');
 
 /** A language, so a Python test never pairs with a TypeScript module of the same name. */
@@ -46,7 +49,7 @@ function pointsAt(test: string, source: string): boolean {
 export function pairTests(files: ChangedFile[]): Coverage {
   const present = files.filter((f) => f.status !== 'deleted');
   const tests = present.filter((f) => isTestFile(f.path)).map((f) => f.path);
-  const sources = present.filter((f) => !isTestFile(f.path) && CODE.test(f.path) && !NOT_UNIT.test(f.path)).map((f) => f.path);
+  const sources = present.filter((f) => isSourceCode(f.path)).map((f) => f.path);
 
   const pairs: Coverage['pairs'] = [];
   const untested: string[] = [];
