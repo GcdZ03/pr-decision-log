@@ -2,7 +2,7 @@
 ## Decision log
 
 **Checks (last run):** pytest ✓ · pnpm test ✓
-**Never run:** docker build (a Docker file changed)
+**Never run:** docker build (a Docker file changed) · **Changed after the last test run:** `services/api/src/parsing.py` (3 min later) · **Not covered by this log:** 1 commit made outside the recorded sessions: [`2222222`](https://github.com/acme/app/pull/12/commits/2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
 
 ### Decisions you confirmed
 - Upload storage: Local volume
