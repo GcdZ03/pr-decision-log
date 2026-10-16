@@ -102,6 +102,12 @@ function contextLine(log: DecisionLog): string {
     const later = gap(stale.lastTestAt, stale.lastEditAt);
     parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ''}`);
   }
+  const outside = log.outsideCommits ?? [];
+  if (outside.length > 0) {
+    const ref = (c: { sha: string }) => (log.prUrl ? `[${code(c.sha.slice(0, 7))}](${log.prUrl}/commits/${c.sha})` : code(c.sha.slice(0, 7)));
+    const list = outside.slice(0, LISTED_PATHS).map(ref).join(', ') + (outside.length > LISTED_PATHS ? ` +${outside.length - LISTED_PATHS} more` : '');
+    parts.push(`**Not covered by this log:** ${count(outside.length, 'commit')} made outside the recorded sessions: ${list}`);
+  }
   return parts.join(' · ');
 }
 

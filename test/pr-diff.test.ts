@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { diffAgainst, defaultBase, notIgnoredIn } from '../src/publish/pr-diff.ts';
+import { diffAgainst, defaultBase, notIgnoredIn, commitsSince } from '../src/publish/pr-diff.ts';
 
 /** main <- feat-a <- feat-b, pushed to a bare remote; feat-b is checked out. */
 function withStack(fn: (work: string) => void) {
@@ -84,4 +84,14 @@ test('outside a repository nothing is dropped, rather than guessing', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('commitsSince lists the branch commits with their committer times', () => {
+  withStack((work) => {
+    const commits = commitsSince('feat-a', work);
+
+    assert.equal(commits.length, 1);
+    assert.match(commits[0]!.sha, /^[0-9a-f]{40}$/);
+    assert.ok(!Number.isNaN(Date.parse(commits[0]!.at)));
+  });
 });

@@ -343,3 +343,9 @@ test('when stray writes are all the details hold, the summary says so', () => {
 
   assert.match(render(log), /<summary>written but not in the diff \(1\)<\/summary>/);
 });
+
+test('commits outside the recorded sessions are named on the second line, linked when the PR is known', () => {
+  const log = { ...buildLog([run('npm test')], { ...meta, prUrl: PR_URL }), outsideCommits: [{ sha: 'c'.repeat(40), at: '2026-10-17T12:30:00Z' }] };
+
+  assert.match(render(log), new RegExp(`\\*\\*Not covered by this log:\\*\\* 1 commit made outside the recorded sessions: \\[\`ccccccc\`\\]\\(${PR_URL}/commits/${'c'.repeat(40)}\\)`));
+});

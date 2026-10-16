@@ -358,3 +358,32 @@ test('a lint or build run is not a test run, and an auto-fix after the tests is 
 
   assert.deepEqual(log.changedAfterTests?.files, ['src/a.py']);
 });
+
+// Commits a human or another tool made are not covered by the log's checks
+// or flags, and nothing said so. A commit is covered when a recorded git
+// command that makes commits ran at that time.
+const gitRun = (id: string, isoAt: string, command: string, durationMs?: number): TimelineEvent =>
+  ({ kind: 'command', id, at: isoAt, command, classification: 'git', outcome: 'pass', ...(durationMs ? { durationMs } : {}) });
+
+test('commits no recorded git command made are listed as outside the recorded sessions', () => {
+  const log = buildLog([
+    gitRun('g1', '2026-10-17T10:05:10Z', 'git commit -m "feat: x"'),
+    gitRun('g2', '2026-10-17T11:00:00Z', 'git rebase main', 30_000),
+  ], { ...meta, commits: [
+    { sha: 'aaaaaaa1111111111111111111111111111111a1', at: '2026-10-17T10:05:08Z' },
+    { sha: 'bbbbbbb2222222222222222222222222222222b2', at: '2026-10-17T10:59:40Z' },
+    { sha: 'ccccccc3333333333333333333333333333333c3', at: '2026-10-17T12:30:00+02:00' },
+  ] });
+
+  assert.deepEqual(log.outsideCommits, [{ sha: 'ccccccc3333333333333333333333333333333c3', at: '2026-10-17T12:30:00+02:00' }]);
+});
+
+test('with every commit made in a session, or no commits known, nothing is listed', () => {
+  const ev = [gitRun('g1', '2026-10-17T10:05:10Z', 'cd /w && git add -A && git commit -q -m x')];
+  assert.equal(buildLog(ev, { ...meta, commits: [{ sha: 'a'.repeat(40), at: '2026-10-17T10:05:09Z' }] }).outsideCommits, undefined);
+  assert.equal(buildLog(ev, meta).outsideCommits, undefined);
+});
+
+test('a session that recorded nothing claims nothing about commits', () => {
+  assert.equal(buildLog([], { ...meta, commits: [{ sha: 'a'.repeat(40), at: '2026-10-17T10:05:09Z' }] }).outsideCommits, undefined);
+});

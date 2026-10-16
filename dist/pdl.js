@@ -1496,6 +1496,14 @@ function buildLog(recorded, meta, decisions = []) {
   const lastTest = testRuns[testRuns.length - 1];
   const after = lastTest ? events.filter((e) => e.kind === "edit" && e.at > lastTest.at && (!meta.repoRoot || insideRepo(e.path, meta.repoRoot)) && isSourceCode(rel(e.path))) : [];
   const changedAfterTests = lastTest && after.length > 0 ? { files: [...new Set(after.map((e) => rel(e.path)))], lastTestAt: lastTest.at, lastEditAt: after.map((e) => e.at).sort().at(-1) } : void 0;
+  const committing = events.filter((e) => e.kind === "command" && /(?:^|[\s;&|(])(?:git\s+(?:-C\s+\S+\s+)?(?:commit|merge|rebase|cherry-pick|am|revert|pull)|gh\s+pr\s+merge)\b/.test(scriptSkeleton(e.command)));
+  const covered = (at) => committing.some((e) => {
+    const t = Date.parse(at);
+    const end = Date.parse(e.at);
+    const start = end - (e.kind === "command" ? e.durationMs ?? 0 : 0) - 12e4;
+    return t >= start && t <= end + 6e4;
+  });
+  const outsideCommits = events.length > 0 && meta.commits ? meta.commits.filter((c) => !covered(c.at)) : [];
   const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
   const present = fromDiff.filter((f) => f.status !== "deleted").map((f) => f.path);
   const commandTexts = events.flatMap((e) => e.kind === "command" ? [e.command] : []);
@@ -1553,6 +1561,7 @@ function buildLog(recorded, meta, decisions = []) {
     strayWrites,
     ...fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {},
     ...changedAfterTests ? { changedAfterTests } : {},
+    ...outsideCommits.length > 0 ? { outsideCommits } : {},
     // Links go into the PR body, so only a plain github.com pull request URL is kept.
     ...meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {},
     // Model text, so it passes through the same redactor as everything else.
@@ -1626,6 +1635,12 @@ function contextLine(log) {
   if (stale) {
     const later = gap2(stale.lastTestAt, stale.lastEditAt);
     parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ""}`);
+  }
+  const outside = log.outsideCommits ?? [];
+  if (outside.length > 0) {
+    const ref = (c) => log.prUrl ? `[${code(c.sha.slice(0, 7))}](${log.prUrl}/commits/${c.sha})` : code(c.sha.slice(0, 7));
+    const list = outside.slice(0, LISTED_PATHS).map(ref).join(", ") + (outside.length > LISTED_PATHS ? ` +${outside.length - LISTED_PATHS} more` : "");
+    parts.push(`**Not covered by this log:** ${count2(outside.length, "commit")} made outside the recorded sessions: ${list}`);
   }
   return parts.join(" \xB7 ");
 }
@@ -1999,6 +2014,17 @@ function notIgnoredIn(cwd, paths2) {
   if (p.status !== 0 && p.status !== 1) return paths2;
   const ignored = new Set((p.stdout ?? "").split("\n").filter(Boolean));
   return paths2.filter((x) => !ignored.has(x));
+}
+function commitsSince(base, cwd = process.cwd()) {
+  for (const ref of [`origin/${base}`, base]) {
+    const r = git(["log", "--format=%H%x09%cI", `${ref}..HEAD`], cwd);
+    if (!r.ok) continue;
+    return r.out.trim().split("\n").filter(Boolean).map((line) => {
+      const [sha = "", at = ""] = line.split("	");
+      return { sha, at };
+    });
+  }
+  return [];
 }
 
 // src/events/branch.ts
@@ -2707,6 +2733,7 @@ function logMeta(place, base, prUrl) {
     headSha: git2(["rev-parse", "--short", "HEAD"], place.repo),
     repoRoot: place.repo,
     diff: diffAgainst(base, place.repo),
+    commits: commitsSince(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
     notIgnored: (paths2) => notIgnoredIn(place.repo, paths2)
