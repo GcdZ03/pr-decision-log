@@ -18,6 +18,7 @@ export function expandWrites(events: TimelineEvent[]): TimelineEvent[] {
       via: 'shell',
       ...(isAbsolute(w.path) ? { dir: dirname(w.path) } : {}),
       ...(w.append ? { additive: true as const } : {}),
+      ...(w.cosmetic ? { cosmetic: true as const } : {}),
       ...(w.assertionsBefore !== undefined ? { assertionsBefore: w.assertionsBefore } : {}),
       ...(w.assertionsAfter !== undefined ? { assertionsAfter: w.assertionsAfter } : {}),
     }));

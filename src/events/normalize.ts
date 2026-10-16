@@ -3,6 +3,7 @@ import type { TimelineEvent } from './types.ts';
 import { countAssertions } from '../flags/assertions.ts';
 import { exitStatusMaskable, outputShowsFailure } from './runner-output.ts';
 import { commandDir } from './location.ts';
+import { isCosmeticChange } from '../flags/cosmetic.ts';
 import { shellWrites } from './shell-writes.ts';
 import type { CommandWrite } from './types.ts';
 import { dirname, isAbsolute } from 'node:path';
@@ -59,6 +60,7 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
       ...(w.content !== undefined && !w.append ? { assertionsAfter: countAssertions(w.content) } : {}),
       // A scripted replace is counted like an Edit tool edit: what it took out against what it put in.
       ...(w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {}),
+      ...(w.replaced && isCosmeticChange(w.replaced.old, w.replaced.new, w.path) ? { cosmetic: true as const } : {}),
     }));
     const writes = written.length > 0 ? { writes: written } : {};
 
@@ -111,6 +113,7 @@ export function normalize(payload: Payload, recordedAt: string): TimelineEvent |
       kind: 'edit', id, at: recordedAt, path, ...dir,
       assertionsBefore: countAssertions(before),
       assertionsAfter: countAssertions(after),
+      ...(isCosmeticChange(before, after, path) ? { cosmetic: true as const } : {}),
     };
   }
 

@@ -373,6 +373,46 @@ function commandDir(command2, cwd, home = homedir2()) {
   return dir;
 }
 
+// src/flags/cosmetic.ts
+function syntaxOf(path) {
+  const ext = /\.([^.]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+  if (/^(?:py|rb|sh|bash|zsh|ya?ml|toml)$/.test(ext)) return { line: ["#"] };
+  if (/^(?:[cm]?[tj]sx?|go|swift|rs|java|kt|kts|c|cc|cpp|h|hpp|cs|scala|dart)$/.test(ext)) return { line: ["//"], block: ["/*", "*/"] };
+  if (ext === "php") return { line: ["//", "#"], block: ["/*", "*/"] };
+  return {};
+}
+function codeOnly(text, syntax) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'" || c === "`") {
+      const triple = text.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+      let j = i + triple.length;
+      while (j < text.length && !text.startsWith(triple, j)) j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + triple.length);
+      i = j + triple.length - 1;
+      continue;
+    }
+    if (syntax.block && text.startsWith(syntax.block[0], i)) {
+      const end = text.indexOf(syntax.block[1], i + syntax.block[0].length);
+      i = end === -1 ? text.length : end + syntax.block[1].length - 1;
+      out += " ";
+      continue;
+    }
+    if (syntax.line?.some((m) => text.startsWith(m, i))) {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    out += c;
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+function isCosmeticChange(before, after, path) {
+  const syntax = syntaxOf(path);
+  return codeOnly(before, syntax) === codeOnly(after, syntax);
+}
+
 // src/events/shell-writes.ts
 import { homedir as homedir3 } from "node:os";
 import { isAbsolute, resolve as resolve2 } from "node:path";
@@ -671,7 +711,8 @@ function normalize(payload, recordedAt) {
       ...w.append ? { append: true } : {},
       ...w.content !== void 0 && !w.append ? { assertionsAfter: countAssertions(w.content) } : {},
       // A scripted replace is counted like an Edit tool edit: what it took out against what it put in.
-      ...w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {}
+      ...w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {},
+      ...w.replaced && isCosmeticChange(w.replaced.old, w.replaced.new, w.path) ? { cosmetic: true } : {}
     }));
     const writes = written.length > 0 ? { writes: written } : {};
     if (event === "PostToolUseFailure") {
@@ -728,7 +769,8 @@ function normalize(payload, recordedAt) {
       path,
       ...dir,
       assertionsBefore: countAssertions(before),
-      assertionsAfter: countAssertions(after)
+      assertionsAfter: countAssertions(after),
+      ...isCosmeticChange(before, after, path) ? { cosmetic: true } : {}
     };
   }
   return null;
@@ -828,6 +870,7 @@ function detectTestEditedAfterFailure(events) {
   const emit = (failure, end) => {
     for (const w of window.values()) {
       if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
+      if (w.cosmetic === w.count) continue;
       if (w.first.additive && w.last.additive) continue;
       const tests = testsIn([failure, ...refails], w.first.path);
       flags.push({
@@ -860,10 +903,11 @@ function detectTestEditedAfterFailure(events) {
       if (!isTestFile(e.path)) continue;
       if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? "", e.path))) continue;
       const known = e.assertionsBefore !== void 0 && e.assertionsAfter !== void 0;
-      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0 };
+      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0, cosmetic: 0 };
       w.last = e;
       w.count += 1;
       w.viaShell += e.via === "shell" ? 1 : 0;
+      w.cosmetic += e.cosmetic ? 1 : 0;
       if (known) {
         w.before += e.assertionsBefore;
         w.after += e.assertionsAfter;
@@ -986,6 +1030,7 @@ function expandWrites(events) {
       via: "shell",
       ...isAbsolute4(w.path) ? { dir: dirname2(w.path) } : {},
       ...w.append ? { additive: true } : {},
+      ...w.cosmetic ? { cosmetic: true } : {},
       ...w.assertionsBefore !== void 0 ? { assertionsBefore: w.assertionsBefore } : {},
       ...w.assertionsAfter !== void 0 ? { assertionsAfter: w.assertionsAfter } : {}
     }));

@@ -27,6 +27,8 @@ export type CommandWrite = {
   path: string;
   /** `>>`, `tee -a`, an append-mode open: it can only add. */
   append?: true;
+  /** The write changed only comments and whitespace. */
+  cosmetic?: true;
   /** For a scripted `replace(old, new)`: the assertions in the text it took out. */
   assertionsBefore?: number;
   /** For a heredoc written straight to the file, the assertions in what was written; for a scripted replace, in what it put in. */
@@ -47,6 +49,8 @@ export type EditEvent = {
   via?: 'shell';
   /** An append: whatever it wrote, it removed nothing. */
   additive?: true;
+  /** The edit changed only comments and whitespace, so not what a test checks. */
+  cosmetic?: true;
 };
 
 export type TimelineEvent = CommandEvent | EditEvent;
