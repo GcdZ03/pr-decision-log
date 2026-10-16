@@ -589,33 +589,97 @@ function literalAssignments(body) {
   }
   return out;
 }
-var UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\+=|\.replaceAll\(|\.format\(|\bf['"]/;
-function replacements(segment, at) {
-  if (UNREADABLE_CHANGE.test(segment)) return void 0;
+var UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\.replaceAll\(|\.format\(|\bf['"]/;
+function withoutLiteralText(segment) {
+  let out = "";
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    if (c === '"' || c === "'" || c === "`") {
+      const lit = literalAt(segment, i);
+      if (lit) {
+        out += `${c}${c}`;
+        i = lit.end - 1;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+function pairListAt(text, i) {
+  if (text[i] !== "[") return void 0;
+  const pairs = [];
+  const ws = (j2) => j2 + (/^[\s,]*/.exec(text.slice(j2))?.[0].length ?? 0);
+  let j = ws(i + 1);
+  while (text[j] !== "]") {
+    if (text[j] !== "(") return void 0;
+    const first = literalAt(text, j + 1 + (/^\s*/.exec(text.slice(j + 1))?.[0].length ?? 0));
+    if (!first) return void 0;
+    const comma = /^\s*,\s*/.exec(text.slice(first.end));
+    const second = comma ? literalAt(text, first.end + comma[0].length) : void 0;
+    const close = second ? /^\s*,?\s*\)/.exec(text.slice(second.end)) : null;
+    if (!second || !close) return void 0;
+    pairs.push([first.value, second.value]);
+    j = ws(second.end + close[0].length);
+    if (j >= text.length) return void 0;
+  }
+  return { pairs, end: j + 1 };
+}
+function pairListAssignments(body) {
+  const out = [];
+  for (const m of body.matchAll(/(?:^|[;\n])\s*([A-Za-z_]\w*)\s*=\s*(?=\[)/g)) {
+    const list = pairListAt(body, m.index + m[0].length);
+    if (list) out.push({ at: m.index, name: m[1], pairs: list.pairs });
+  }
+  return out;
+}
+function replacements(segment, at, pairsAt) {
+  if (UNREADABLE_CHANGE.test(withoutLiteralText(segment))) return void 0;
   const arg2 = (pos) => {
     const start = pos + (/^\s*/.exec(segment.slice(pos))?.[0].length ?? 0);
     const lit = literalAt(segment, start);
     if (lit) return lit;
     const name = /^[A-Za-z_]\w*/.exec(segment.slice(start))?.[0];
-    const value = name ? at(name, start) : void 0;
-    return name && value !== void 0 ? { value, end: start + name.length } : void 0;
+    if (!name) return void 0;
+    return { value: at(name, start) ?? "", end: start + name.length, name };
   };
-  const olds = [];
-  const news = [];
+  const loops = [];
+  for (const m of segment.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+/g)) {
+    const pos = m.index + m[0].length;
+    const inline = pairListAt(segment, pos);
+    const named = /^[A-Za-z_]\w*/.exec(segment.slice(pos))?.[0];
+    loops.push({ first: m[1], second: m[2], pairs: inline?.pairs ?? (named ? pairsAt(named, pos) : void 0) });
+  }
+  const changes = [];
   for (const m of segment.matchAll(/\.replace\(/g)) {
     const first = arg2(m.index + m[0].length);
     const comma = first ? /^\s*,/.exec(segment.slice(first.end)) : null;
     const second = first && comma ? arg2(first.end + comma[0].length) : void 0;
     const close = second ? /^\s*(?:,\s*\d+\s*)?\)/.exec(segment.slice(second.end)) : null;
     if (!first || !second || !close) return void 0;
-    olds.push(first.value);
-    news.push(second.value);
+    const loop = first.name && second.name ? loops.find((l) => l.first === first.name && l.second === second.name) : void 0;
+    if (loop) {
+      if (!loop.pairs) return void 0;
+      for (const [o, n] of loop.pairs) changes.push({ at: m.index, old: o, new: n });
+      continue;
+    }
+    if (first.name && at(first.name, m.index) === void 0 || second.name && at(second.name, m.index) === void 0) return void 0;
+    changes.push({ at: m.index, old: first.value, new: second.value });
   }
-  return olds.length > 0 ? { old: olds.join("\n"), new: news.join("\n") } : void 0;
+  for (const m of segment.matchAll(/\b[A-Za-z_]\w*\s*\+=\s*/g)) {
+    const lit = literalAt(segment, m.index + m[0].length);
+    if (!lit) return void 0;
+    changes.push({ at: m.index, old: "", new: lit.value });
+  }
+  if (changes.length === 0) return void 0;
+  changes.sort((a, b) => a.at - b.at);
+  return { old: changes.map((c) => c.old).join("\n"), new: changes.map((c) => c.new).join("\n") };
 }
 function scriptWrites(body) {
   const assignments = literalAssignments(body);
   const valueAt = (name, at) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
+  const lists = pairListAssignments(body);
+  const pairsAt = (name, at) => lists.filter((l) => l.name === name && l.at < at).at(-1)?.pairs;
   const found = [];
   for (const m of body.matchAll(/\bopen\(\s*(?:(['"])([^'"\n]+)\1|(\w+))\s*,\s*(['"])([^'"\n]*)\4/g)) {
     const path = m[2] ?? valueAt(m[3], m.index);
@@ -631,7 +695,7 @@ function scriptWrites(body) {
   found.sort((a, b) => a.at - b.at);
   return found.map((w, i) => {
     const from = i === 0 ? 0 : found[i - 1].at;
-    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos));
+    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos), (name, pos) => pairsAt(name, from + pos));
     return { path: w.path, append: w.append, ...replaced ? { replaced } : {} };
   });
 }
