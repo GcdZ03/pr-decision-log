@@ -1,4 +1,4 @@
-import type { TimelineEvent, Outcome } from '../events/types.ts';
+import type { EditEvent, TimelineEvent, Outcome } from '../events/types.ts';
 import type { CommandKind } from '../events/classify-command.ts';
 import { detectTestEditedAfterFailure, summariseCommand } from '../flags/test-edited-after-failure.ts';
 import type { Flag } from '../flags/types.ts';
@@ -9,12 +9,13 @@ import type { Decision } from '../extract/decisions.ts';
 import { isTestFile } from '../flags/test-files.ts';
 import { classifyCommand } from '../events/classify-command.ts';
 import { expandWrites } from '../events/expand-writes.ts';
+import { scriptSkeleton } from '../events/command-text.ts';
 import { summariseChecks, type Check } from '../review/checks.ts';
 import { neverRun, type NeverRun } from '../review/never-run.ts';
 import { riskyFiles, type RiskyGroup } from '../review/risky.ts';
 import { summariseScope, type Scope } from '../review/scope.ts';
-import { analyzeDiff, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
-import { pairTests, type Coverage } from '../review/coverage.ts';
+import { analyzeDiff, assertionChanges, changedFiles, testOrigin, type FileStatus } from '../flags/diff-signals.ts';
+import { isSourceCode, pairTests, type Coverage } from '../review/coverage.ts';
 
 export type Verification = {
   at: string;
@@ -56,6 +57,10 @@ export type DecisionLog = {
   strayWrites: string[];
   /** Changed code paired with its changed tests, and the code without one. Absent with no diff. */
   coverage?: Coverage;
+  /** Code edited after the last test run, which no test run covered. Absent when none was, or no test ran. */
+  changedAfterTests?: { files: string[]; lastTestAt: string; lastEditAt: string };
+  /** Branch commits no recorded git command made: the log's checks and flags do not cover them. */
+  outsideCommits?: { sha: string; at: string }[];
   /** The pull request, for links to its files; only ever a github.com pull request URL. */
   prUrl?: string;
   /** Claims, kept in one list with a `kind` and split at render time. */
@@ -81,6 +86,8 @@ export type LogMeta = {
   extraRedactions?: RedactionRule[];
   /** Filters out paths git ignores; omitted, every path is kept. */
   notIgnored?: (paths: string[]) => string[];
+  /** The branch's commits since its base, with committer times. */
+  commits?: { sha: string; at: string }[];
   /** The pull request the log is published to, when known. */
   prUrl?: string;
 };
@@ -172,6 +179,31 @@ export function buildLog(
       ]
     : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
 
+  // Code the agent edited after its last test run was never tested by it. Any
+  // test run counts: a later `npm test` re-verifies what `node --test` did.
+  const testRuns = events.filter((e) => e.kind === 'command' && classifyCommand(e.command) === 'test');
+  const lastTest = testRuns[testRuns.length - 1];
+  const after = lastTest
+    ? events.filter((e): e is EditEvent => e.kind === 'edit' && e.at > lastTest.at
+        && (!meta.repoRoot || insideRepo(e.path, meta.repoRoot)) && isSourceCode(rel(e.path)))
+    : [];
+  const changedAfterTests = lastTest && after.length > 0
+    ? { files: [...new Set(after.map((e) => rel(e.path)))], lastTestAt: lastTest.at, lastEditAt: after.map((e) => e.at).sort().at(-1)! }
+    : undefined;
+
+  // A commit is covered when a recorded command that makes commits ran at
+  // that time (its duration, plus slack for clocks and hooks). Anything else
+  // was made outside every recorded session, so nothing here speaks for it.
+  const committing = events.filter((e) => e.kind === 'command'
+    && /(?:^|[\s;&|(])(?:git\s+(?:-C\s+\S+\s+)?(?:commit|merge|rebase|cherry-pick|am|revert|pull)|gh\s+pr\s+merge)\b/.test(scriptSkeleton(e.command)));
+  const covered = (at: string): boolean => committing.some((e) => {
+    const t = Date.parse(at);
+    const end = Date.parse(e.at);
+    const start = end - (e.kind === 'command' ? e.durationMs ?? 0 : 0) - 120_000;
+    return t >= start && t <= end + 60_000;
+  });
+  const outsideCommits = events.length > 0 && meta.commits ? meta.commits.filter((c) => !covered(c.at)) : [];
+
   const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
   const present = fromDiff.filter((f) => f.status !== 'deleted').map((f) => f.path);
   const commandTexts = events.flatMap((e) => (e.kind === 'command' ? [e.command] : []));
@@ -197,6 +229,11 @@ export function buildLog(
       detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
       ...(f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {}),
       ...(origin ? { origin } : {}),
+      ...(() => {
+        const changes = meta.diff && f.code === 'TEST_EDITED_AFTER_FAILURE' ? assertionChanges(meta.diff, file) : [];
+        const safe = (t: string) => clean(scrubPaths(t, meta.repoRoot));
+        return changes.length > 0 ? { assertionDiff: changes.map((c) => ({ removed: safe(c.removed), ...(c.added !== undefined ? { added: safe(c.added) } : {}) })) } : {};
+      })(),
       ...(origin === 'mixed' ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}),
     };
   });
@@ -239,6 +276,8 @@ export function buildLog(
     ...(scope ? { scope } : {}),
     strayWrites,
     ...(fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {}),
+    ...(changedAfterTests ? { changedAfterTests } : {}),
+    ...(outsideCommits.length > 0 ? { outsideCommits } : {}),
     // Links go into the PR body, so only a plain github.com pull request URL is kept.
     ...(meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {}),
     // Model text, so it passes through the same redactor as everything else.

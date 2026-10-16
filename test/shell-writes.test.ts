@@ -171,7 +171,7 @@ test('a script that changes the text in ways that cannot be read records no text
   for (const middle of [
     "s=re.sub(r'assert .*', '', s)",
     "s=s.replace(old_value, 'y')",
-    "s += '\\nassert extra'",
+    's += extra_text',
     "s=sub(s, 'a', 'b')",
   ]) {
     const script = ["python3 - <<'EOF'", "p='tests/test_c.py'; s=open(p).read()", "s=s.replace('assert a', 'assert b')", middle, "open(p,'w').write(s)", 'EOF'].join('\n');
@@ -187,4 +187,60 @@ test('a Node script replace with template literals counts too', () => {
 
 test('a write with no replace before it records no texts', () => {
   assert.equal(shellWrites("python3 - <<'EOF'\nopen('a.py','w').write(data)\nEOF", CWD)[0]?.replaced, undefined);
+});
+
+// The most common reason scripted edits had no counts: replacement pairs in a
+// list, applied in a loop. Their texts are literals too.
+test('replacement pairs in a list applied in a loop are read', () => {
+  const script = [
+    "python3 - <<'EOF'",
+    "f='tests/test_a.py'",
+    's=open(f).read()',
+    'reps=[',
+    '("""    assert a == 1""", """    assert a == 2"""),',
+    "('assert b', ''),",
+    ']',
+    'for a,b in reps:',
+    '    assert a in s, a',
+    '    s=s.replace(a,b)',
+    "open(f,'w').write(s)",
+    'EOF',
+  ].join('\n');
+
+  assert.deepEqual(shellWrites(script, CWD)[0]?.replaced, { old: '    assert a == 1\nassert b', new: '    assert a == 2\n' });
+});
+
+test('an inline list in the loop is read too, and a pair that is not two literals leaves it unknown', () => {
+  const inline = "python3 - <<'EOF'\np='t.py'; s=open(p).read()\nfor old, new in [('x', 'y'), (\"z\", \"w\")]:\n    s = s.replace(old, new)\nopen(p,'w').write(s)\nEOF";
+  assert.deepEqual(shellWrites(inline, CWD)[0]?.replaced, { old: 'x\nz', new: 'y\nw' });
+
+  const computed = "python3 - <<'EOF'\np='t.py'; s=open(p).read()\nfor a, b in [('x', make())]:\n    s = s.replace(a, b)\nopen(p,'w').write(s)\nEOF";
+  assert.equal(shellWrites(computed, CWD)[0]?.replaced, undefined);
+});
+
+test('appending a literal with += is an addition, and appending anything else is unknown', () => {
+  const appended = "python3 - <<'EOF'\np='tests/test_a.py'; s=open(p).read()\ns += '''\ndef test_new():\n    assert x\n'''\nopen(p,'w').write(s)\nEOF";
+  assert.deepEqual(shellWrites(appended, CWD)[0]?.replaced, { old: '', new: '\ndef test_new():\n    assert x\n' });
+
+  const computed = "python3 - <<'EOF'\np='t.py'; s=open(p).read()\ns += extra\nopen(p,'w').write(s)\nEOF";
+  assert.equal(shellWrites(computed, CWD)[0]?.replaced, undefined);
+});
+
+test('text being inserted may contain f-strings, .format or sub( without making the edit unknown', () => {
+  const script = [
+    "python3 - <<'EOF'",
+    "p='tests/conftest.py'; s=open(p).read()",
+    "s=s.replace('''        message = \"unreachable\"''', '''        message = f\"Postgres is not reachable at {where}\"\n        out = sub(x)\n        y = \"{}\".format(z)''')",
+    "open(p,'w').write(s)",
+    'EOF',
+  ].join('\n');
+
+  assert.match(shellWrites(script, CWD)[0]?.replaced?.new ?? '', /Postgres is not reachable/);
+});
+
+test('an f-string or regex replace in the script itself still leaves the edit unknown', () => {
+  for (const middle of ["s = s.replace(f'{a}', 'b')", "s = re.sub(r'x', 'y', s)"]) {
+    const script = ["python3 - <<'EOF'", "p='t.py'; s=open(p).read()", middle, "open(p,'w').write(s)", 'EOF'].join('\n');
+    assert.equal(shellWrites(script, CWD)[0]?.replaced, undefined, middle);
+  }
 });

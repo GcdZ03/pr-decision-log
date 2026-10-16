@@ -400,3 +400,32 @@ test('a file the diff does not contain, or a name it never mentions in a modifie
   assert.equal(testOrigin(PY_DIFF, 'tests/test_absent.py', 'test_x'), undefined);
   assert.equal(testOrigin(PY_DIFF, 'tests/test_v.py', 'test_not_in_any_hunk'), 'existing');
 });
+
+// A test-edit flag quotes what the diff did to the test's assertions, so a
+// reviewer sees the change without opening the file. Only diff lines, which
+// the PR already shows, are quoted.
+import { assertionChanges } from '../src/flags/diff-signals.ts';
+
+test('a removed assertion is paired with the assertion that replaced it in the same block', () => {
+  const diff = [
+    'diff --git a/tests/test_v.py b/tests/test_v.py', '--- a/tests/test_v.py', '+++ b/tests/test_v.py', '@@ -1,6 +1,6 @@',
+    ' def test_order():',
+    '-    assert order == [MAR, OCT]',
+    '+    assert order == [OCT, MAR]',
+    ' def test_rank():',
+    '-    assert ranked is not None and ranked[1] < CONFIDENT',
+    '-    x = 1',
+    '+    x = 2',
+  ].join('\n');
+
+  assert.deepEqual(assertionChanges(diff, 'tests/test_v.py'), [
+    { removed: 'assert order == [MAR, OCT]', added: 'assert order == [OCT, MAR]' },
+    { removed: 'assert ranked is not None and ranked[1] < CONFIDENT' },
+  ]);
+});
+
+test('added assertions alone, other files and missing files give nothing', () => {
+  const diff = ['diff --git a/t.py b/t.py', '--- a/t.py', '+++ b/t.py', '@@ -1 +1,2 @@', ' x', '+assert y'].join('\n');
+  assert.deepEqual(assertionChanges(diff, 't.py'), []);
+  assert.deepEqual(assertionChanges(diff, 'other.py'), []);
+});

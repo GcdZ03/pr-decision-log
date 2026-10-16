@@ -326,3 +326,64 @@ test('the PR address is carried for links, and absent without one', () => {
   assert.equal(buildLog([], meta).prUrl, undefined);
   assert.equal(buildLog([], { ...meta, prUrl: 'javascript:alert(1)' }).prUrl, undefined, 'only a GitHub pull request URL');
 });
+
+// A tick says the last run passed, but code edited after the last test run
+// was never tested. In 3 of 26 real PRs the agent changed code after its
+// final test run (one 13 minutes after). Said per PR, from any test run: a
+// later `npm test` re-verifies what an earlier `node --test` checked.
+const at = (m: number) => `2026-10-17T10:${String(m).padStart(2, '0')}:00Z`;
+const testRun = (id: string, m: number, command = 'npm test'): TimelineEvent =>
+  ({ kind: 'command', id, at: at(m), command, classification: 'test', outcome: 'pass' });
+const codeEdit = (id: string, m: number, path: string): TimelineEvent => ({ kind: 'edit', id, at: at(m), path });
+
+test('code edited after the last test run is reported, with how long after', () => {
+  const log = buildLog([
+    testRun('t1', 1), codeEdit('e1', 5, '/repo/src/settings.py'), codeEdit('e2', 14, '/repo/src/api.py'), codeEdit('e3', 6, '/repo/src/settings.py'),
+  ], { ...meta, repoRoot: '/repo' });
+
+  assert.deepEqual(log.changedAfterTests, { files: ['src/settings.py', 'src/api.py'], lastTestAt: at(1), lastEditAt: at(14) });
+});
+
+test('a test run after the edits clears it, and tests, docs and config edits do not count', () => {
+  assert.equal(buildLog([codeEdit('e1', 1, '/repo/src/a.py'), testRun('t1', 2)], { ...meta, repoRoot: '/repo' }).changedAfterTests, undefined);
+  assert.equal(buildLog([testRun('t1', 1), codeEdit('e1', 2, '/repo/tests/test_a.py'), codeEdit('e2', 3, '/repo/README.md'), codeEdit('e3', 4, '/repo/pyproject.toml')], { ...meta, repoRoot: '/repo' }).changedAfterTests, undefined);
+});
+
+test('with no test run at all there is nothing to call stale; NO_TEST_RUN covers it', () => {
+  assert.equal(buildLog([codeEdit('e1', 1, '/repo/src/a.py')], { ...meta, repoRoot: '/repo' }).changedAfterTests, undefined);
+});
+
+test('a lint or build run is not a test run, and an auto-fix after the tests is an edit like any other', () => {
+  const log = buildLog([testRun('t1', 1), testRun('l1', 2, 'uv run ruff check .'), codeEdit('e1', 3, '/repo/src/a.py')], { ...meta, repoRoot: '/repo' });
+
+  assert.deepEqual(log.changedAfterTests?.files, ['src/a.py']);
+});
+
+// Commits a human or another tool made are not covered by the log's checks
+// or flags, and nothing said so. A commit is covered when a recorded git
+// command that makes commits ran at that time.
+const gitRun = (id: string, isoAt: string, command: string, durationMs?: number): TimelineEvent =>
+  ({ kind: 'command', id, at: isoAt, command, classification: 'git', outcome: 'pass', ...(durationMs ? { durationMs } : {}) });
+
+test('commits no recorded git command made are listed as outside the recorded sessions', () => {
+  const log = buildLog([
+    gitRun('g1', '2026-10-17T10:05:10Z', 'git commit -m "feat: x"'),
+    gitRun('g2', '2026-10-17T11:00:00Z', 'git rebase main', 30_000),
+  ], { ...meta, commits: [
+    { sha: 'aaaaaaa1111111111111111111111111111111a1', at: '2026-10-17T10:05:08Z' },
+    { sha: 'bbbbbbb2222222222222222222222222222222b2', at: '2026-10-17T10:59:40Z' },
+    { sha: 'ccccccc3333333333333333333333333333333c3', at: '2026-10-17T12:30:00+02:00' },
+  ] });
+
+  assert.deepEqual(log.outsideCommits, [{ sha: 'ccccccc3333333333333333333333333333333c3', at: '2026-10-17T12:30:00+02:00' }]);
+});
+
+test('with every commit made in a session, or no commits known, nothing is listed', () => {
+  const ev = [gitRun('g1', '2026-10-17T10:05:10Z', 'cd /w && git add -A && git commit -q -m x')];
+  assert.equal(buildLog(ev, { ...meta, commits: [{ sha: 'a'.repeat(40), at: '2026-10-17T10:05:09Z' }] }).outsideCommits, undefined);
+  assert.equal(buildLog(ev, meta).outsideCommits, undefined);
+});
+
+test('a session that recorded nothing claims nothing about commits', () => {
+  assert.equal(buildLog([], { ...meta, commits: [{ sha: 'a'.repeat(40), at: '2026-10-17T10:05:09Z' }] }).outsideCommits, undefined);
+});

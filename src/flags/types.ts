@@ -20,6 +20,8 @@ export type Flag = {
   tests?: string[];
   /** For a test-edit flag: whether those tests were added by this PR or already existed (from the diff); `mixed` lists each. */
   origin?: 'added' | 'existing' | 'mixed';
+  /** For a test-edit flag: what the PR's diff did to the file's assertions, quoted from the diff. */
+  assertionDiff?: { removed: string; added?: string }[];
   /** For a `mixed` origin: each named test and where it came from. */
   testOrigins?: { name: string; origin: 'added' | 'existing' }[];
 };

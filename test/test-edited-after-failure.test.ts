@@ -410,3 +410,11 @@ test('more than two failing tests are summarised with a count', () => {
 
   assert.match(flags[0]?.detail ?? '', /failed at 03:12 \(`test_a`, `test_b` \+2 more\);/);
 });
+
+test('an episode whose test edits only changed comments is not flagged, and one real edit still flags it', () => {
+  const cosmetic = (id: string, m: string): TimelineEvent => ({ kind: 'edit', id, at: `2026-10-17T10:${m}:00Z`, path: 'tests/test_import_validate.py', cosmetic: true });
+  const fails = { ...fail('c1', '2026-10-17T10:00:00Z') };
+
+  assert.deepEqual(detectTestEditedAfterFailure([fails, cosmetic('e1', '01'), pass('c2', '2026-10-17T10:02:00Z')]), []);
+  assert.equal(detectTestEditedAfterFailure([fails, cosmetic('e1', '01'), edit('e2', '2026-10-17T10:01:30Z', 'tests/test_import_validate.py', 2, 1), pass('c2', '2026-10-17T10:02:00Z')]).length, 1);
+});

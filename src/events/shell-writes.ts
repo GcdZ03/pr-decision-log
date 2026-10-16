@@ -178,37 +178,117 @@ function literalAssignments(body: string): { at: number; name: string; value: st
 }
 
 /** Ways a script changes text that cannot be read off literally. Any of them makes the counts unknown. */
-const UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\+=|\.replaceAll\(|\.format\(|\bf['"]/;
+const UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\.replaceAll\(|\.format\(|\bf['"]/;
+
+type Pair = [string, string];
 
 /**
- * The text a script segment's `replace(old, new)` calls take out and put in,
- * or undefined when the segment changes the text in any way that is not a
- * replace with readable literals: a half-read edit would give a count that
- * looks exact and is not.
+ * The script with every string literal's contents removed and its quotes
+ * and prefix kept, so the unreadable-change check looks at the script's own
+ * code, not at the test code it inserts: new test code full of f-strings is
+ * still a plain replace.
  */
-function replacements(segment: string, at: (name: string, pos: number) => string | undefined): { old: string; new: string } | undefined {
-  if (UNREADABLE_CHANGE.test(segment)) return undefined;
-  const arg = (pos: number): { value: string; end: number } | undefined => {
+function withoutLiteralText(segment: string): string {
+  let out = '';
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i]!;
+    if (c === '"' || c === "'" || c === '`') {
+      const lit = literalAt(segment, i);
+      if (lit) { out += `${c}${c}`; i = lit.end - 1; continue; }
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** A list of two-literal tuples starting at `[`: `[('a', 'b'), ("""c""", """d""")]`. Undefined when any entry is not. */
+function pairListAt(text: string, i: number): { pairs: Pair[]; end: number } | undefined {
+  if (text[i] !== '[') return undefined;
+  const pairs: Pair[] = [];
+  const ws = (j: number) => j + (/^[\s,]*/.exec(text.slice(j))?.[0].length ?? 0);
+  let j = ws(i + 1);
+  while (text[j] !== ']') {
+    if (text[j] !== '(') return undefined;
+    const first = literalAt(text, j + 1 + (/^\s*/.exec(text.slice(j + 1))?.[0].length ?? 0));
+    if (!first) return undefined;
+    const comma = /^\s*,\s*/.exec(text.slice(first.end));
+    const second = comma ? literalAt(text, first.end + comma[0].length) : undefined;
+    const close = second ? /^\s*,?\s*\)/.exec(text.slice(second.end)) : null;
+    if (!second || !close) return undefined;
+    pairs.push([first.value, second.value]);
+    j = ws(second.end + close[0].length);
+    if (j >= text.length) return undefined;
+  }
+  return { pairs, end: j + 1 };
+}
+
+/** Lists of replacement pairs assigned to a name, in order: `reps = [(old, new), ...]`. */
+function pairListAssignments(body: string): { at: number; name: string; pairs: Pair[] }[] {
+  const out: { at: number; name: string; pairs: Pair[] }[] = [];
+  for (const m of body.matchAll(/(?:^|[;\n])\s*([A-Za-z_]\w*)\s*=\s*(?=\[)/g)) {
+    const list = pairListAt(body, m.index + m[0].length);
+    if (list) out.push({ at: m.index, name: m[1]!, pairs: list.pairs });
+  }
+  return out;
+}
+
+/**
+ * The text a script segment takes out and puts in: its `replace(old, new)`
+ * calls, replacement pairs applied in a `for a, b in pairs:` loop, and
+ * literals appended with `+=`. Undefined when the segment changes the text
+ * in any way that is not one of those with readable literals: a half-read
+ * edit would give a count that looks exact and is not.
+ */
+function replacements(
+  segment: string,
+  at: (name: string, pos: number) => string | undefined,
+  pairsAt: (name: string, pos: number) => Pair[] | undefined,
+): { old: string; new: string } | undefined {
+  if (UNREADABLE_CHANGE.test(withoutLiteralText(segment))) return undefined;
+  const arg = (pos: number): { value: string; end: number; name?: string } | undefined => {
     const start = pos + (/^\s*/.exec(segment.slice(pos))?.[0].length ?? 0);
     const lit = literalAt(segment, start);
     if (lit) return lit;
     const name = /^[A-Za-z_]\w*/.exec(segment.slice(start))?.[0];
-    const value = name ? at(name, start) : undefined;
-    return name && value !== undefined ? { value, end: start + name.length } : undefined;
+    if (!name) return undefined;
+    return { value: at(name, start) ?? '', end: start + name.length, name };
   };
 
-  const olds: string[] = [];
-  const news: string[] = [];
+  // `for a, b in reps:` / `for a, b in [(...), ...]:` — the loop variables stand for every pair.
+  const loops: { first: string; second: string; pairs?: Pair[] }[] = [];
+  for (const m of segment.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+/g)) {
+    const pos = m.index + m[0].length;
+    const inline = pairListAt(segment, pos);
+    const named = /^[A-Za-z_]\w*/.exec(segment.slice(pos))?.[0];
+    loops.push({ first: m[1]!, second: m[2]!, pairs: inline?.pairs ?? (named ? pairsAt(named, pos) : undefined) });
+  }
+
+  const changes: { at: number; old: string; new: string }[] = [];
   for (const m of segment.matchAll(/\.replace\(/g)) {
     const first = arg(m.index + m[0].length);
     const comma = first ? /^\s*,/.exec(segment.slice(first.end)) : null;
     const second = first && comma ? arg(first.end + comma[0].length) : undefined;
     const close = second ? /^\s*(?:,\s*\d+\s*)?\)/.exec(segment.slice(second.end)) : null;
     if (!first || !second || !close) return undefined;
-    olds.push(first.value);
-    news.push(second.value);
+    const loop = first.name && second.name ? loops.find((l) => l.first === first.name && l.second === second.name) : undefined;
+    if (loop) {
+      if (!loop.pairs) return undefined;
+      for (const [o, n] of loop.pairs) changes.push({ at: m.index, old: o, new: n });
+      continue;
+    }
+    // A name that is not a literal it can resolve leaves the edit unknown.
+    if ((first.name && at(first.name, m.index) === undefined) || (second.name && at(second.name, m.index) === undefined)) return undefined;
+    changes.push({ at: m.index, old: first.value, new: second.value });
   }
-  return olds.length > 0 ? { old: olds.join('\n'), new: news.join('\n') } : undefined;
+  for (const m of segment.matchAll(/\b[A-Za-z_]\w*\s*\+=\s*/g)) {
+    const lit = literalAt(segment, m.index + m[0].length);
+    if (!lit) return undefined;
+    changes.push({ at: m.index, old: '', new: lit.value });
+  }
+
+  if (changes.length === 0) return undefined;
+  changes.sort((a, b) => a.at - b.at);
+  return { old: changes.map((c) => c.old).join('\n'), new: changes.map((c) => c.new).join('\n') };
 }
 
 /**
@@ -221,6 +301,8 @@ function replacements(segment: string, at: (name: string, pos: number) => string
 function scriptWrites(body: string): { path: string; append: boolean; replaced?: { old: string; new: string } }[] {
   const assignments = literalAssignments(body);
   const valueAt = (name: string, at: number) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
+  const lists = pairListAssignments(body);
+  const pairsAt = (name: string, at: number) => lists.filter((l) => l.name === name && l.at < at).at(-1)?.pairs;
 
   const found: { at: number; path: string; append: boolean }[] = [];
   for (const m of body.matchAll(/\bopen\(\s*(?:(['"])([^'"\n]+)\1|(\w+))\s*,\s*(['"])([^'"\n]*)\4/g)) {
@@ -238,7 +320,7 @@ function scriptWrites(body: string): { path: string; append: boolean; replaced?:
   found.sort((a, b) => a.at - b.at);
   return found.map((w, i) => {
     const from = i === 0 ? 0 : found[i - 1]!.at;
-    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos));
+    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos), (name, pos) => pairsAt(name, from + pos));
     return { path: w.path, append: w.append, ...(replaced ? { replaced } : {}) };
   });
 }

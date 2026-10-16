@@ -230,3 +230,23 @@ test('a scripted replace on a test file records assertion counts before and afte
   assert.deepEqual(c.writes, [{ path: '/w/repo/tests/test_r.py', assertionsBefore: 2, assertionsAfter: 1 }]);
   assert.doesNotMatch(JSON.stringify(c), /"writes".*secretValue.*\]\}$/);
 });
+
+test('an edit that only changes comments or whitespace is marked cosmetic, from the Edit tool or a script', () => {
+  const edit = asEdit(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Edit',
+    tool_input: { file_path: '/w/tests/test_a.py', old_string: 'assert t == "bearer"', new_string: 'assert t == "bearer"  # noqa: S105' },
+  }), 'now'));
+  const real = asEdit(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Edit',
+    tool_input: { file_path: '/w/tests/test_a.py', old_string: 'assert x == 1', new_string: 'assert x == 2' },
+  }), 'now'));
+  const scripted = asCommand(normalize(payload({
+    hook_event_name: 'PostToolUse', session_id: 's', tool_use_id: 't', tool_name: 'Bash', cwd: '/w',
+    tool_input: { command: "python3 - <<'EOF'\np='tests/test_a.py'; s=open(p).read()\ns=s.replace('assert t == 1', 'assert t == 1  # noqa')\nopen(p,'w').write(s)\nEOF" },
+    tool_response: { stdout: '' },
+  }), 'now'));
+
+  assert.equal(edit.cosmetic, true);
+  assert.equal(real.cosmetic, undefined);
+  assert.equal(scripted.writes?.[0]?.cosmetic, true);
+});

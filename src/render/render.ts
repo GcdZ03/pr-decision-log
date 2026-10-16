@@ -18,9 +18,6 @@ export type RenderOptions = {
 export const VISIBLE_LINE_BUDGET = 15;
 const VISIBLE_ITEMS = 3;
 const LISTED_PATHS = 3;
-const LISTED_FILES = 100;
-/** The Files list once the budget is tight. */
-const SHORT_FILES = 30;
 const LISTED_STRAY = 10;
 
 /** Visible blocks the budget may drop, named as the cut note names them. */
@@ -46,7 +43,6 @@ const WARNING_ORDER: FlagCode[] = [
 
 const MARK: Record<Outcome, string> = { pass: '✓', fail: '✗ (failed, not re-run)', interrupted: '✗ (interrupted)', unknown: '?' };
 
-const KIND_PREFIX: Record<string, string> = { decision: '', assumption: 'Assumption: ', open_item: 'Open item: ' };
 
 /** Inline code that survives a backtick in the value. */
 const code = (s: string): string => (s.includes('`') ? `\`\`${s}\`\`` : `\`${s}\``);
@@ -87,7 +83,9 @@ function mixedOrigin(f: Flag): string {
 function flagLine(log: DecisionLog, f: Flag, note = false): string {
   const where = f.file ? ` ${fileRef(log, f.file)}` : '';
   const origin = f.origin === 'mixed' ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? '' : '';
-  return `- **${LABEL[f.code]}**${origin}${note ? ' *(note)*' : ''}${where}: ${f.detail}`;
+  const changes = f.assertionDiff ?? [];
+  const diffNote = changes.length === 0 ? '' : ` Diff: ${changes.slice(0, 2).map((c) => (c.added !== undefined ? `${code(c.removed)} → ${code(c.added)}` : `${code(c.removed)} removed`)).join('; ')}${changes.length > 2 ? ` +${changes.length - 2} more` : ''}.`;
+  return `- **${LABEL[f.code]}**${origin}${note ? ' *(note)*' : ''}${where}: ${f.detail}${diffNote}`;
 }
 
 function checksLine(log: DecisionLog): string {
@@ -96,9 +94,32 @@ function checksLine(log: DecisionLog): string {
   return `**Checks (last run):** ${tools.map((t) => `${t.tool} ${MARK[t.status]}`).join(' · ')}`;
 }
 
+/** The second verdict line: what the session never checked. Empty when there is nothing to say. */
 function contextLine(log: DecisionLog): string {
+  const parts: string[] = [];
   const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(' · ');
-  return `${never ? `**Never run:** ${never} · ` : ''}Intent: see the PR description.`;
+  if (never) parts.push(`**Never run:** ${never}`);
+  const stale = log.changedAfterTests;
+  if (stale) {
+    const later = gap(stale.lastTestAt, stale.lastEditAt);
+    parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ''}`);
+  }
+  const outside = log.outsideCommits ?? [];
+  if (outside.length > 0) {
+    const ref = (c: { sha: string }) => (log.prUrl ? `[${code(c.sha.slice(0, 7))}](${log.prUrl}/commits/${c.sha})` : code(c.sha.slice(0, 7)));
+    const list = outside.slice(0, LISTED_PATHS).map(ref).join(', ') + (outside.length > LISTED_PATHS ? ` +${outside.length - LISTED_PATHS} more` : '');
+    parts.push(`**Not covered by this log:** ${count(outside.length, 'commit')} made outside the recorded sessions: ${list}`);
+  }
+  return parts.join(' · ');
+}
+
+/** A time gap in s, min or h. Empty for an unparseable or negative gap. */
+function gap(from: string, to: string): string {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1000);
+  if (!Number.isFinite(s) || s < 0) return '';
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
 }
 
 function lookHere(log: DecisionLog): string[] {
@@ -119,7 +140,6 @@ function scopeLines(log: DecisionLog, s: Scope): string[] {
     + (statuses.length ? ` (${statuses.join(', ')})` : '') + (areas ? ` · ${areas}` : '');
   const second = [
     s.testsChanged > 0 ? `Tests: ${count(s.testsChanged, 'file')} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ''}` : '',
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${fileRef(log, l.path)} (${count(l.lines, 'line')})`).join(', ')}` : '',
     log.coverage && log.coverage.untested.length > 0 ? `no matching test change: ${count(log.coverage.untested.length, 'source file')}` : '',
   ].filter(Boolean).join(' · ');
   return second ? [first, second] : [first];
@@ -137,49 +157,44 @@ function capped(items: string[], restInDetails: boolean): string[] {
 
 /**
  * How much of the details a body carries. Under budget pressure they shrink
- * a step at a time (spec 7: least important first): the Files list, then the
- * passing checks, then the stated block, then everything but what a visible
- * pointer refers to.
+ * a step at a time, least important first: the reading aids, then the
+ * failed-checks table, then the blocks a visible pointer refers to.
  */
 type DetailLevel = {
-  /** Files listed by name; 0 gives the count only; undefined drops the block. */
-  files?: number;
-  /** `failing`: only checks whose last run did not pass, with a count of the rest. */
-  checks?: 'all' | 'failing';
-  stated: boolean;
-  /** Notes, auto-fixes, stray writes and the other-command count. */
+  /** The table of checks that failed at least once. */
+  checks: boolean;
+  /** Code and tests, notes and stray writes. */
   extras: boolean;
   moreLook: boolean;
   moreConfirmed: boolean;
 };
 
 const LEVELS: DetailLevel[] = [
-  { files: LISTED_FILES, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: SHORT_FILES, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: 'all', stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: 'failing', stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: 'failing', stated: false, extras: true, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: false },
-  { stated: false, extras: false, moreLook: false, moreConfirmed: false },
+  { checks: true, extras: true, moreLook: true, moreConfirmed: true },
+  { checks: true, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: false },
+  { checks: false, extras: false, moreLook: false, moreConfirmed: false },
 ];
 
+/**
+ * The collapsed details: only what a reviewer can act on and cannot see
+ * elsewhere. The file list (GitHub's Files tab), passing checks (the
+ * Checks line), auto-fixes, other commands and the agent's own stated
+ * reasons were here once and are not: each repeated something or led to
+ * nothing.
+ */
 function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], level: DetailLevel): string {
   const parts: string[] = [];
   const summary: string[] = [];
-  const checks = log.checks.filter((c) => !c.fixer);
-  const fixers = log.checks.filter((c) => c.fixer);
 
-  if (checks.length > 0 && level.checks) {
-    const shown = level.checks === 'all' ? checks : checks.filter((c) => c.last !== 'pass');
-    const rows = shown.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm(c.lastAt)} |`);
-    const table = rows.length > 0 ? `\n\n| Check | Runs | Failures | Last result | Last run |\n| --- | --- | --- | --- | --- |\n${rows.join('\n')}` : '';
-    const passed = checks.length - shown.length;
-    parts.push(`#### Checks${table}${passed > 0 ? `\n\n*${count(passed, rows.length > 0 ? 'more check' : 'check')} passed on ${passed === 1 ? 'its' : 'their'} last run.*` : ''}`);
-    const runs = count(checks.reduce((n, c) => n + c.runs, 0), 'run');
-    summary.push(`${level.checks === 'all' ? 'every check' : 'checks'} (${checks.length} distinct, ${runs})`);
+  // A check's story is its failures: one that only ever passed is a tick above.
+  const failed = log.checks.filter((c) => !c.fixer && c.failures > 0);
+  if (failed.length > 0 && level.checks) {
+    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm(c.lastAt)} |`);
+    parts.push(`#### Checks that failed\n\n| Check | Runs | Failures | Last result | Last run |\n| --- | --- | --- | --- | --- |\n${rows.join('\n')}`);
+    summary.push(`checks that failed (${failed.length})`);
   }
-  if (fixers.length > 0 && level.extras) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ''}`).join(', ')}`);
   if (moreLook.length > 0 && level.moreLook) {
     parts.push(`#### More to look at\n${moreLook.join('\n')}`);
     summary.push(`more to look at (${moreLook.length})`);
@@ -195,41 +210,17 @@ function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], 
     summary.push(`notes (${notes.length})`);
   }
 
-  const stated = log.decisions.filter((d) => d.confidence !== 'confirmed_by_human');
-  if (stated.length > 0 && level.stated) {
-    parts.push(`#### Stated by the agent\n${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ''}${d.text} *(stated)*`).join('\n')}`);
-    summary.push(`stated by the agent (${stated.length})`);
-  }
-
   // A reading aid, not coverage: a file can be tested by a test this PR left alone.
   const cov = log.coverage;
   if (cov && (cov.pairs.length > 0 || cov.untested.length > 0) && level.extras) {
     const pairs = cov.pairs.map((p) => `- ${code(p.source)} ↔ ${p.tests.map(code).join(', ')}`);
     const untested = cov.untested.length > 0 ? `Changed with no matching test change: ${paths(cov.untested, LISTED_STRAY)}` : '';
     parts.push(`#### Code and tests${pairs.length ? `\n${pairs.join('\n')}` : ''}${untested ? `${pairs.length ? '\n\n' : '\n'}${untested}` : ''}`);
-  }
-
-  const files = log.changes.filter((c) => c.status !== 'not in diff');
-  if (files.length > 0 && level.files !== undefined) {
-    const listed = Math.min(files.length, level.files);
-    const rows = files.slice(0, listed).map((c) => {
-      const tags = [...(c.status && c.status !== 'modified' ? [c.status] : []), ...(c.role === 'test' ? ['test'] : [])];
-      return `- ${code(c.file)}${tags.length ? ` (${tags.join(', ')})` : ''}`;
-    });
-    const rest = files.length - listed;
-    // The full list ends with a plain count; a list cut for the budget says where the rest is.
-    const tail = listed === 0
-      ? `*${count(files.length, 'file')}; see the Files changed tab.*`
-      : rest > 0 ? `*and ${count(rest, 'more file')}${level.files === LISTED_FILES ? '' : '; see the Files changed tab'}.*` : '';
-    parts.push(`#### Files${rows.length ? `\n${rows.join('\n')}` : ''}${tail ? `${rows.length ? '\n\n' : '\n'}${tail}` : ''}`);
-    summary.push(`${rest === 0 ? 'every file' : 'files'} (${files.length})`);
+    summary.push('code and tests');
   }
   if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count(log.strayWrites.length, 'file')}: ${paths(log.strayWrites, LISTED_STRAY)}`);
-  }
-  if (log.otherCommands > 0 && level.extras) {
-    parts.push(`${count(log.otherCommands, 'other command')} (file writes, searches, git) not listed.`);
-    summary.push(count(log.otherCommands, 'other command'));
+    summary.push(`written but not in the diff (${log.strayWrites.length})`);
   }
 
   if (parts.length === 0) return '';
@@ -262,7 +253,7 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
 
   const header = `${MARKER_START} v=1 sha=${log.repo.headSha ?? 'unknown'} -->\n## Decision log\n`;
   const from = log.sessions.length > 1 ? `${log.sessions.length} agent sessions` : 'the agent session';
-  const footer = `\n<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool}) · Redaction: ${count(log.redaction.hits, 'rule')} applied.</sub>\n${MARKER_END}\n`;
+  const footer = `\n<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool})</sub>\n${MARKER_END}\n`;
 
   const look = lookHere(log);
   const confirmed = log.decisions.filter((d) => d.confidence === 'confirmed_by_human').map((d) => `- ${d.text}`);
@@ -278,7 +269,9 @@ export function render(log: DecisionLog, options: RenderOptions = {}): string {
     const detailsText = details(log, moreLook, moreConfirmed, level);
     const detailsCut = levelIndex === 0 || !anyDetails ? 'none' : detailsText ? 'some' : 'all';
     const note = cutNote(detailsCut, dropped);
-    const blocks = [`\n${checksLine(log)}\n${contextLine(log)}${note ? ` ${note}` : ''}\n`];
+    // The note joins the second line, or is the second line when there is none.
+    const second = [contextLine(log), note].filter(Boolean).join(' ');
+    const blocks = [`\n${checksLine(log)}${second ? `\n${second}` : ''}\n`];
     if (confirmed.length > 0 && !dropped.includes(CONFIRMED)) {
       blocks.push(`\n### Decisions you confirmed\n${capped(confirmed, level.moreConfirmed).join('\n')}\n`);
     }

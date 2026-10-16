@@ -151,7 +151,7 @@ test('a PR opened from a worktree of another repository gets its log there', () 
       { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_use_id: 't1',
         tool_input: { command: 'cd ../atlas-wt-01 && pytest' }, error: 'Exit code 1\nFAILED src/test_api.py::test_get' },
       { ...base, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: 't2',
-        tool_input: { file_path: join(wt, 'src', 'api.py'), old_string: 'a', new_string: 'b' }, tool_response: {} },
+        tool_input: { file_path: join(wt, 'src', 'test_api.py'), old_string: 'assert a', new_string: 'b' }, tool_response: {} },
       { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 't3',
         tool_input: { command: `cd ${wt} && gh pr create --fill` },
         tool_response: { stdout: 'https://github.com/o/atlas/pull/18\n', stderr: '' } },
@@ -174,7 +174,7 @@ test('a PR opened from a worktree of another repository gets its log there', () 
     const published = readFileSync(body, 'utf8');
     assert.match(published, /Adds the API\./, 'the author text is kept');
     assert.match(published, /pytest/);
-    assert.match(published, /`src\/api\.py`/, 'paths are relative to the worktree');
+    assert.match(published, /`src\/test_api\.py`/, 'paths are relative to the worktree');
     assert.doesNotMatch(published, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'no absolute path is published');
   } finally {
     rmSync(dir, { recursive: true, force: true });

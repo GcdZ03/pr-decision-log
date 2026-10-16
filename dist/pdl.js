@@ -172,16 +172,16 @@ function stripHeredocs(command2) {
 }
 function blankQuotes(text) {
   let out = "";
-  let quote;
+  let quote2;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quote) {
-      if (c === "\\" && quote === '"') {
+    if (quote2) {
+      if (c === "\\" && quote2 === '"') {
         i++;
         continue;
       }
-      if (c === quote) {
-        quote = void 0;
+      if (c === quote2) {
+        quote2 = void 0;
         out += c;
       }
       continue;
@@ -191,7 +191,7 @@ function blankQuotes(text) {
       i++;
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    if (c === '"' || c === "'") quote2 = c;
     out += c;
   }
   return out;
@@ -373,6 +373,46 @@ function commandDir(command2, cwd, home = homedir2()) {
   return dir;
 }
 
+// src/flags/cosmetic.ts
+function syntaxOf(path) {
+  const ext = /\.([^.]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+  if (/^(?:py|rb|sh|bash|zsh|ya?ml|toml)$/.test(ext)) return { line: ["#"] };
+  if (/^(?:[cm]?[tj]sx?|go|swift|rs|java|kt|kts|c|cc|cpp|h|hpp|cs|scala|dart)$/.test(ext)) return { line: ["//"], block: ["/*", "*/"] };
+  if (ext === "php") return { line: ["//", "#"], block: ["/*", "*/"] };
+  return {};
+}
+function codeOnly(text, syntax) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'" || c === "`") {
+      const triple = text.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+      let j = i + triple.length;
+      while (j < text.length && !text.startsWith(triple, j)) j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + triple.length);
+      i = j + triple.length - 1;
+      continue;
+    }
+    if (syntax.block && text.startsWith(syntax.block[0], i)) {
+      const end = text.indexOf(syntax.block[1], i + syntax.block[0].length);
+      i = end === -1 ? text.length : end + syntax.block[1].length - 1;
+      out += " ";
+      continue;
+    }
+    if (syntax.line?.some((m) => text.startsWith(m, i))) {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    out += c;
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+function isCosmeticChange(before, after, path) {
+  const syntax = syntaxOf(path);
+  return codeOnly(before, syntax) === codeOnly(after, syntax);
+}
+
 // src/events/shell-writes.ts
 import { homedir as homedir3 } from "node:os";
 import { isAbsolute, resolve as resolve2 } from "node:path";
@@ -523,8 +563,8 @@ function literalAt(text, i) {
     const end = text.indexOf(triple, j + 3);
     return end < 0 ? void 0 : { value: text.slice(j + 3, end), end: end + 3 };
   }
-  const quote = text[j];
-  if (quote !== "'" && quote !== '"' && quote !== "`") return void 0;
+  const quote2 = text[j];
+  if (quote2 !== "'" && quote2 !== '"' && quote2 !== "`") return void 0;
   let value = "";
   for (j += 1; j < text.length; j++) {
     const c = text[j];
@@ -534,9 +574,9 @@ function literalAt(text, i) {
       j++;
       continue;
     }
-    if (c === quote) return { value, end: j + 1 };
-    if (c === "\n" && quote !== "`") return void 0;
-    if (quote === "`" && c === "$" && text[j + 1] === "{") return void 0;
+    if (c === quote2) return { value, end: j + 1 };
+    if (c === "\n" && quote2 !== "`") return void 0;
+    if (quote2 === "`" && c === "$" && text[j + 1] === "{") return void 0;
     value += c;
   }
   return void 0;
@@ -549,33 +589,97 @@ function literalAssignments(body) {
   }
   return out;
 }
-var UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\+=|\.replaceAll\(|\.format\(|\bf['"]/;
-function replacements(segment, at) {
-  if (UNREADABLE_CHANGE.test(segment)) return void 0;
+var UNREADABLE_CHANGE = /\bre\.sub\(|\bsub\(|\.replaceAll\(|\.format\(|\bf['"]/;
+function withoutLiteralText(segment) {
+  let out = "";
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    if (c === '"' || c === "'" || c === "`") {
+      const lit = literalAt(segment, i);
+      if (lit) {
+        out += `${c}${c}`;
+        i = lit.end - 1;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+function pairListAt(text, i) {
+  if (text[i] !== "[") return void 0;
+  const pairs = [];
+  const ws = (j2) => j2 + (/^[\s,]*/.exec(text.slice(j2))?.[0].length ?? 0);
+  let j = ws(i + 1);
+  while (text[j] !== "]") {
+    if (text[j] !== "(") return void 0;
+    const first = literalAt(text, j + 1 + (/^\s*/.exec(text.slice(j + 1))?.[0].length ?? 0));
+    if (!first) return void 0;
+    const comma = /^\s*,\s*/.exec(text.slice(first.end));
+    const second = comma ? literalAt(text, first.end + comma[0].length) : void 0;
+    const close = second ? /^\s*,?\s*\)/.exec(text.slice(second.end)) : null;
+    if (!second || !close) return void 0;
+    pairs.push([first.value, second.value]);
+    j = ws(second.end + close[0].length);
+    if (j >= text.length) return void 0;
+  }
+  return { pairs, end: j + 1 };
+}
+function pairListAssignments(body) {
+  const out = [];
+  for (const m of body.matchAll(/(?:^|[;\n])\s*([A-Za-z_]\w*)\s*=\s*(?=\[)/g)) {
+    const list = pairListAt(body, m.index + m[0].length);
+    if (list) out.push({ at: m.index, name: m[1], pairs: list.pairs });
+  }
+  return out;
+}
+function replacements(segment, at, pairsAt) {
+  if (UNREADABLE_CHANGE.test(withoutLiteralText(segment))) return void 0;
   const arg2 = (pos) => {
     const start = pos + (/^\s*/.exec(segment.slice(pos))?.[0].length ?? 0);
     const lit = literalAt(segment, start);
     if (lit) return lit;
     const name = /^[A-Za-z_]\w*/.exec(segment.slice(start))?.[0];
-    const value = name ? at(name, start) : void 0;
-    return name && value !== void 0 ? { value, end: start + name.length } : void 0;
+    if (!name) return void 0;
+    return { value: at(name, start) ?? "", end: start + name.length, name };
   };
-  const olds = [];
-  const news = [];
+  const loops = [];
+  for (const m of segment.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+/g)) {
+    const pos = m.index + m[0].length;
+    const inline = pairListAt(segment, pos);
+    const named = /^[A-Za-z_]\w*/.exec(segment.slice(pos))?.[0];
+    loops.push({ first: m[1], second: m[2], pairs: inline?.pairs ?? (named ? pairsAt(named, pos) : void 0) });
+  }
+  const changes = [];
   for (const m of segment.matchAll(/\.replace\(/g)) {
     const first = arg2(m.index + m[0].length);
     const comma = first ? /^\s*,/.exec(segment.slice(first.end)) : null;
     const second = first && comma ? arg2(first.end + comma[0].length) : void 0;
     const close = second ? /^\s*(?:,\s*\d+\s*)?\)/.exec(segment.slice(second.end)) : null;
     if (!first || !second || !close) return void 0;
-    olds.push(first.value);
-    news.push(second.value);
+    const loop = first.name && second.name ? loops.find((l) => l.first === first.name && l.second === second.name) : void 0;
+    if (loop) {
+      if (!loop.pairs) return void 0;
+      for (const [o, n] of loop.pairs) changes.push({ at: m.index, old: o, new: n });
+      continue;
+    }
+    if (first.name && at(first.name, m.index) === void 0 || second.name && at(second.name, m.index) === void 0) return void 0;
+    changes.push({ at: m.index, old: first.value, new: second.value });
   }
-  return olds.length > 0 ? { old: olds.join("\n"), new: news.join("\n") } : void 0;
+  for (const m of segment.matchAll(/\b[A-Za-z_]\w*\s*\+=\s*/g)) {
+    const lit = literalAt(segment, m.index + m[0].length);
+    if (!lit) return void 0;
+    changes.push({ at: m.index, old: "", new: lit.value });
+  }
+  if (changes.length === 0) return void 0;
+  changes.sort((a, b) => a.at - b.at);
+  return { old: changes.map((c) => c.old).join("\n"), new: changes.map((c) => c.new).join("\n") };
 }
 function scriptWrites(body) {
   const assignments = literalAssignments(body);
   const valueAt = (name, at) => assignments.filter((a) => a.name === name && a.at < at).at(-1)?.value;
+  const lists = pairListAssignments(body);
+  const pairsAt = (name, at) => lists.filter((l) => l.name === name && l.at < at).at(-1)?.pairs;
   const found = [];
   for (const m of body.matchAll(/\bopen\(\s*(?:(['"])([^'"\n]+)\1|(\w+))\s*,\s*(['"])([^'"\n]*)\4/g)) {
     const path = m[2] ?? valueAt(m[3], m.index);
@@ -591,7 +695,7 @@ function scriptWrites(body) {
   found.sort((a, b) => a.at - b.at);
   return found.map((w, i) => {
     const from = i === 0 ? 0 : found[i - 1].at;
-    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos));
+    const replaced = replacements(body.slice(from, w.at), (name, pos) => valueAt(name, from + pos), (name, pos) => pairsAt(name, from + pos));
     return { path: w.path, append: w.append, ...replaced ? { replaced } : {} };
   });
 }
@@ -671,7 +775,8 @@ function normalize(payload, recordedAt) {
       ...w.append ? { append: true } : {},
       ...w.content !== void 0 && !w.append ? { assertionsAfter: countAssertions(w.content) } : {},
       // A scripted replace is counted like an Edit tool edit: what it took out against what it put in.
-      ...w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {}
+      ...w.replaced ? { assertionsBefore: countAssertions(w.replaced.old), assertionsAfter: countAssertions(w.replaced.new) } : {},
+      ...w.replaced && isCosmeticChange(w.replaced.old, w.replaced.new, w.path) ? { cosmetic: true } : {}
     }));
     const writes = written.length > 0 ? { writes: written } : {};
     if (event === "PostToolUseFailure") {
@@ -728,7 +833,8 @@ function normalize(payload, recordedAt) {
       path,
       ...dir,
       assertionsBefore: countAssertions(before),
-      assertionsAfter: countAssertions(after)
+      assertionsAfter: countAssertions(after),
+      ...isCosmeticChange(before, after, path) ? { cosmetic: true } : {}
     };
   }
   return null;
@@ -828,6 +934,7 @@ function detectTestEditedAfterFailure(events) {
   const emit = (failure, end) => {
     for (const w of window.values()) {
       if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
+      if (w.cosmetic === w.count) continue;
       if (w.first.additive && w.last.additive) continue;
       const tests = testsIn([failure, ...refails], w.first.path);
       flags.push({
@@ -860,10 +967,11 @@ function detectTestEditedAfterFailure(events) {
       if (!isTestFile(e.path)) continue;
       if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? "", e.path))) continue;
       const known = e.assertionsBefore !== void 0 && e.assertionsAfter !== void 0;
-      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0 };
+      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0, cosmetic: 0 };
       w.last = e;
       w.count += 1;
       w.viaShell += e.via === "shell" ? 1 : 0;
+      w.cosmetic += e.cosmetic ? 1 : 0;
       if (known) {
         w.before += e.assertionsBefore;
         w.after += e.assertionsAfter;
@@ -970,7 +1078,7 @@ function scrubPaths(text, repoRoot2) {
     const forms = [.../* @__PURE__ */ new Set([`/private${root}`, root, root.replace(/^\/private\//, "/")])].sort((a, b) => b.length - a.length);
     for (const form of forms) out = out.replace(new RegExp(`(?<![\\w.~/-])${escape(form)}/`, "g"), "");
   }
-  return out.replace(QUOTED_PRIVATE_PATH, (_m, quote, path) => `${quote}${nameOf(path)}${quote}`).replace(WINDOWS_USER_PATH, reduce).replace(PRIVATE_PATH, reduce);
+  return out.replace(QUOTED_PRIVATE_PATH, (_m, quote2, path) => `${quote2}${nameOf(path)}${quote2}`).replace(WINDOWS_USER_PATH, reduce).replace(PRIVATE_PATH, reduce);
 }
 
 // src/events/expand-writes.ts
@@ -986,6 +1094,7 @@ function expandWrites(events) {
       via: "shell",
       ...isAbsolute4(w.path) ? { dir: dirname2(w.path) } : {},
       ...w.append ? { additive: true } : {},
+      ...w.cosmetic ? { cosmetic: true } : {},
       ...w.assertionsBefore !== void 0 ? { assertionsBefore: w.assertionsBefore } : {},
       ...w.assertionsAfter !== void 0 ? { assertionsAfter: w.assertionsAfter } : {}
     }));
@@ -1258,6 +1367,48 @@ function testOrigin(diff, path, testName) {
   const inNew = file.added.some((l) => re.test(l));
   return inNew && !inOld ? "added" : "existing";
 }
+var MAX_QUOTE = 100;
+var quote = (line) => {
+  const t = line.trim();
+  return t.length > MAX_QUOTE ? `${t.slice(0, MAX_QUOTE - 1)}\u2026` : t;
+};
+function assertionChanges(diff, path) {
+  const out = [];
+  let inFile = false;
+  let inHunk = false;
+  let removed = [];
+  let added = [];
+  const flush = () => {
+    const r = removed.filter((l) => countAssertions(l) > 0);
+    const a = added.filter((l) => countAssertions(l) > 0);
+    r.forEach((line, i) => out.push({ removed: quote(line), ...a[i] !== void 0 ? { added: quote(a[i]) } : {} }));
+    removed = [];
+    added = [];
+  };
+  const matches = (p) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`);
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      inFile = matches(/^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? "");
+      inHunk = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (line.startsWith("@@")) {
+      flush();
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("-")) {
+      if (added.length > 0) flush();
+      removed.push(line.slice(1));
+    } else if (line.startsWith("+")) added.push(line.slice(1));
+    else flush();
+  }
+  flush();
+  return out;
+}
 function changedFiles(diff) {
   return parse(diff).filter((f) => f.path).map((f) => ({
     path: f.path,
@@ -1414,6 +1565,7 @@ function analyzeDiff(diff, options = {}) {
 import { basename as basename5 } from "node:path";
 var CODE = /\.(?:[cm]?[tj]sx?|py|go|rs|swift|java|kt|rb|php|cs|c|cc|cpp|h|hpp|m|scala|vue|svelte)$/;
 var NOT_UNIT = /(?:^|\/)__init__\.py$|\.d\.ts$/;
+var isSourceCode = (path) => !isTestFile(path) && CODE.test(path) && !NOT_UNIT.test(path);
 var sourceStem = (path) => basename5(path).replace(/\.[^.]+$/, "");
 function language(path) {
   const ext = /\.([^.]+)$/.exec(path)?.[1] ?? "";
@@ -1430,7 +1582,7 @@ function pointsAt(test, source) {
 function pairTests(files) {
   const present = files.filter((f) => f.status !== "deleted");
   const tests = present.filter((f) => isTestFile(f.path)).map((f) => f.path);
-  const sources = present.filter((f) => !isTestFile(f.path) && CODE.test(f.path) && !NOT_UNIT.test(f.path)).map((f) => f.path);
+  const sources = present.filter((f) => isSourceCode(f.path)).map((f) => f.path);
   const pairs = [];
   const untested = [];
   for (const source of sources) {
@@ -1491,6 +1643,18 @@ function buildLog(recorded, meta, decisions = []) {
     // a log, a scratch file or build output, not part of the change.
     ...[...edits].filter(([file]) => !fromDiff.some((f) => f.path === file) && !viaShellOnly.has(file)).map(([file, n]) => ({ file, edits: n, role: role(file), status: "not in diff" }))
   ] : [...edits].map(([file, n]) => ({ file, edits: n, role: role(file) }));
+  const testRuns = events.filter((e) => e.kind === "command" && classifyCommand(e.command) === "test");
+  const lastTest = testRuns[testRuns.length - 1];
+  const after = lastTest ? events.filter((e) => e.kind === "edit" && e.at > lastTest.at && (!meta.repoRoot || insideRepo(e.path, meta.repoRoot)) && isSourceCode(rel(e.path))) : [];
+  const changedAfterTests = lastTest && after.length > 0 ? { files: [...new Set(after.map((e) => rel(e.path)))], lastTestAt: lastTest.at, lastEditAt: after.map((e) => e.at).sort().at(-1) } : void 0;
+  const committing = events.filter((e) => e.kind === "command" && /(?:^|[\s;&|(])(?:git\s+(?:-C\s+\S+\s+)?(?:commit|merge|rebase|cherry-pick|am|revert|pull)|gh\s+pr\s+merge)\b/.test(scriptSkeleton(e.command)));
+  const covered = (at) => committing.some((e) => {
+    const t = Date.parse(at);
+    const end = Date.parse(e.at);
+    const start = end - (e.kind === "command" ? e.durationMs ?? 0 : 0) - 12e4;
+    return t >= start && t <= end + 6e4;
+  });
+  const outsideCommits = events.length > 0 && meta.commits ? meta.commits.filter((c) => !covered(c.at)) : [];
   const checks = summariseChecks(events).map((c) => ({ ...c, command: clean(c.command), tool: clean(c.tool) }));
   const present = fromDiff.filter((f) => f.status !== "deleted").map((f) => f.path);
   const commandTexts = events.flatMap((e) => e.kind === "command" ? [e.command] : []);
@@ -1512,6 +1676,11 @@ function buildLog(recorded, meta, decisions = []) {
       detail: clean(scrubPaths(f.file ? f.detail.replaceAll(f.file, file) : f.detail, meta.repoRoot)),
       ...f.tests ? { tests: f.tests.map((t) => clean(scrubPaths(t, meta.repoRoot))) } : {},
       ...origin ? { origin } : {},
+      ...(() => {
+        const changes2 = meta.diff && f.code === "TEST_EDITED_AFTER_FAILURE" ? assertionChanges(meta.diff, file) : [];
+        const safe = (t) => clean(scrubPaths(t, meta.repoRoot));
+        return changes2.length > 0 ? { assertionDiff: changes2.map((c) => ({ removed: safe(c.removed), ...c.added !== void 0 ? { added: safe(c.added) } : {} })) } : {};
+      })(),
       ...origin === "mixed" ? { testOrigins: known.map((n) => ({ ...n, name: clean(scrubPaths(n.name, meta.repoRoot)) })) } : {}
     };
   });
@@ -1547,6 +1716,8 @@ function buildLog(recorded, meta, decisions = []) {
     ...scope ? { scope } : {},
     strayWrites,
     ...fromDiff.length > 0 ? { coverage: pairTests(fromDiff) } : {},
+    ...changedAfterTests ? { changedAfterTests } : {},
+    ...outsideCommits.length > 0 ? { outsideCommits } : {},
     // Links go into the PR body, so only a plain github.com pull request URL is kept.
     ...meta.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(meta.prUrl) ? { prUrl: meta.prUrl } : {},
     // Model text, so it passes through the same redactor as everything else.
@@ -1561,8 +1732,6 @@ var MARKER_START = "<!-- pdl:start";
 var MARKER_END = "<!-- pdl:end -->";
 var VISIBLE_ITEMS = 3;
 var LISTED_PATHS = 3;
-var LISTED_FILES = 100;
-var SHORT_FILES = 30;
 var LISTED_STRAY = 10;
 var SCOPE = "Scope";
 var CONFIRMED = "Decisions you confirmed";
@@ -1586,7 +1755,6 @@ var WARNING_ORDER = [
   "NO_TEST_RUN"
 ];
 var MARK = { pass: "\u2713", fail: "\u2717 (failed, not re-run)", interrupted: "\u2717 (interrupted)", unknown: "?" };
-var KIND_PREFIX = { decision: "", assumption: "Assumption: ", open_item: "Open item: " };
 var code = (s) => s.includes("`") ? `\`\`${s}\`\`` : `\`${s}\``;
 var cell = (s) => s.replace(/\|/g, "\\|");
 var hhmm2 = (iso) => /T(\d{2}:\d{2})/.exec(iso)?.[1] ?? iso;
@@ -1608,7 +1776,9 @@ function mixedOrigin(f) {
 function flagLine(log, f, note = false) {
   const where = f.file ? ` ${fileRef(log, f.file)}` : "";
   const origin = f.origin === "mixed" ? mixedOrigin(f) : f.origin ? ORIGIN[f.origin] ?? "" : "";
-  return `- **${LABEL[f.code]}**${origin}${note ? " *(note)*" : ""}${where}: ${f.detail}`;
+  const changes = f.assertionDiff ?? [];
+  const diffNote = changes.length === 0 ? "" : ` Diff: ${changes.slice(0, 2).map((c) => c.added !== void 0 ? `${code(c.removed)} \u2192 ${code(c.added)}` : `${code(c.removed)} removed`).join("; ")}${changes.length > 2 ? ` +${changes.length - 2} more` : ""}.`;
+  return `- **${LABEL[f.code]}**${origin}${note ? " *(note)*" : ""}${where}: ${f.detail}${diffNote}`;
 }
 function checksLine(log) {
   const tools = toolStatuses(log.checks);
@@ -1616,8 +1786,28 @@ function checksLine(log) {
   return `**Checks (last run):** ${tools.map((t) => `${t.tool} ${MARK[t.status]}`).join(" \xB7 ")}`;
 }
 function contextLine(log) {
+  const parts = [];
   const never = log.neverRun.map((x) => `${x.check} (${x.because})`).join(" \xB7 ");
-  return `${never ? `**Never run:** ${never} \xB7 ` : ""}Intent: see the PR description.`;
+  if (never) parts.push(`**Never run:** ${never}`);
+  const stale = log.changedAfterTests;
+  if (stale) {
+    const later = gap2(stale.lastTestAt, stale.lastEditAt);
+    parts.push(`**Changed after the last test run:** ${paths(stale.files)}${later ? ` (${later} later)` : ""}`);
+  }
+  const outside = log.outsideCommits ?? [];
+  if (outside.length > 0) {
+    const ref = (c) => log.prUrl ? `[${code(c.sha.slice(0, 7))}](${log.prUrl}/commits/${c.sha})` : code(c.sha.slice(0, 7));
+    const list = outside.slice(0, LISTED_PATHS).map(ref).join(", ") + (outside.length > LISTED_PATHS ? ` +${outside.length - LISTED_PATHS} more` : "");
+    parts.push(`**Not covered by this log:** ${count2(outside.length, "commit")} made outside the recorded sessions: ${list}`);
+  }
+  return parts.join(" \xB7 ");
+}
+function gap2(from, to) {
+  const s = Math.round((Date.parse(to) - Date.parse(from)) / 1e3);
+  if (!Number.isFinite(s) || s < 0) return "";
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
 }
 function lookHere(log) {
   const warnings = log.flags.filter((f) => f.severity === "warn");
@@ -1637,7 +1827,6 @@ function scopeLines(log, s) {
   const first = `+${num(s.added)} \u2212${num(s.removed)} lines \xB7 ${count2(s.files, "file")}` + (statuses.length ? ` (${statuses.join(", ")})` : "") + (areas ? ` \xB7 ${areas}` : "");
   const second = [
     s.testsChanged > 0 ? `Tests: ${count2(s.testsChanged, "file")} changed${s.testsAdded ? ` (${s.testsAdded} added)` : ""}` : "",
-    s.largest.length > 0 ? `Largest: ${s.largest.map((l) => `${fileRef(log, l.path)} (${count2(l.lines, "line")})`).join(", ")}` : "",
     log.coverage && log.coverage.untested.length > 0 ? `no matching test change: ${count2(log.coverage.untested.length, "source file")}` : ""
   ].filter(Boolean).join(" \xB7 ");
   return second ? [first, second] : [first];
@@ -1648,36 +1837,25 @@ function capped(items, restInDetails) {
   return [...items.slice(0, VISIBLE_ITEMS), restInDetails ? `- *\u2026and ${rest} more in the details below.*` : `- *\u2026and ${rest} more, cut to fit the PR body.*`];
 }
 var LEVELS = [
-  { files: LISTED_FILES, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: SHORT_FILES, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "all", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "failing", stated: true, extras: true, moreLook: true, moreConfirmed: true },
-  { files: 0, checks: "failing", stated: false, extras: true, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: true },
-  { stated: false, extras: false, moreLook: true, moreConfirmed: false },
-  { stated: false, extras: false, moreLook: false, moreConfirmed: false }
+  { checks: true, extras: true, moreLook: true, moreConfirmed: true },
+  { checks: true, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: true },
+  { checks: false, extras: false, moreLook: true, moreConfirmed: false },
+  { checks: false, extras: false, moreLook: false, moreConfirmed: false }
 ];
 function details(log, moreLook, moreConfirmed, level) {
   const parts = [];
   const summary = [];
-  const checks = log.checks.filter((c) => !c.fixer);
-  const fixers = log.checks.filter((c) => c.fixer);
-  if (checks.length > 0 && level.checks) {
-    const shown = level.checks === "all" ? checks : checks.filter((c) => c.last !== "pass");
-    const rows = shown.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
-    const table = rows.length > 0 ? `
+  const failed = log.checks.filter((c) => !c.fixer && c.failures > 0);
+  if (failed.length > 0 && level.checks) {
+    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
+    parts.push(`#### Checks that failed
 
 | Check | Runs | Failures | Last result | Last run |
 | --- | --- | --- | --- | --- |
-${rows.join("\n")}` : "";
-    const passed = checks.length - shown.length;
-    parts.push(`#### Checks${table}${passed > 0 ? `
-
-*${count2(passed, rows.length > 0 ? "more check" : "check")} passed on ${passed === 1 ? "its" : "their"} last run.*` : ""}`);
-    const runs = count2(checks.reduce((n, c) => n + c.runs, 0), "run");
-    summary.push(`${level.checks === "all" ? "every check" : "checks"} (${checks.length} distinct, ${runs})`);
+${rows.join("\n")}`);
+    summary.push(`checks that failed (${failed.length})`);
   }
-  if (fixers.length > 0 && level.extras) parts.push(`Auto-fixes: ${fixers.map((c) => `${code(c.command)}${c.runs > 1 ? ` (${c.runs})` : ""}`).join(", ")}`);
   if (moreLook.length > 0 && level.moreLook) {
     parts.push(`#### More to look at
 ${moreLook.join("\n")}`);
@@ -1694,38 +1872,17 @@ ${moreConfirmed.join("\n")}`);
 ${notes.map((f) => flagLine(log, f, true)).join("\n")}`);
     summary.push(`notes (${notes.length})`);
   }
-  const stated = log.decisions.filter((d) => d.confidence !== "confirmed_by_human");
-  if (stated.length > 0 && level.stated) {
-    parts.push(`#### Stated by the agent
-${stated.map((d) => `- ${KIND_PREFIX[d.kind] ?? ""}${d.text} *(stated)*`).join("\n")}`);
-    summary.push(`stated by the agent (${stated.length})`);
-  }
   const cov = log.coverage;
   if (cov && (cov.pairs.length > 0 || cov.untested.length > 0) && level.extras) {
     const pairs = cov.pairs.map((p) => `- ${code(p.source)} \u2194 ${p.tests.map(code).join(", ")}`);
     const untested = cov.untested.length > 0 ? `Changed with no matching test change: ${paths(cov.untested, LISTED_STRAY)}` : "";
     parts.push(`#### Code and tests${pairs.length ? `
 ${pairs.join("\n")}` : ""}${untested ? `${pairs.length ? "\n\n" : "\n"}${untested}` : ""}`);
-  }
-  const files = log.changes.filter((c) => c.status !== "not in diff");
-  if (files.length > 0 && level.files !== void 0) {
-    const listed2 = Math.min(files.length, level.files);
-    const rows = files.slice(0, listed2).map((c) => {
-      const tags = [...c.status && c.status !== "modified" ? [c.status] : [], ...c.role === "test" ? ["test"] : []];
-      return `- ${code(c.file)}${tags.length ? ` (${tags.join(", ")})` : ""}`;
-    });
-    const rest = files.length - listed2;
-    const tail = listed2 === 0 ? `*${count2(files.length, "file")}; see the Files changed tab.*` : rest > 0 ? `*and ${count2(rest, "more file")}${level.files === LISTED_FILES ? "" : "; see the Files changed tab"}.*` : "";
-    parts.push(`#### Files${rows.length ? `
-${rows.join("\n")}` : ""}${tail ? `${rows.length ? "\n\n" : "\n"}${tail}` : ""}`);
-    summary.push(`${rest === 0 ? "every file" : "files"} (${files.length})`);
+    summary.push("code and tests");
   }
   if (log.strayWrites.length > 0 && level.extras) {
     parts.push(`Written during the session but not in the diff: ${count2(log.strayWrites.length, "file")}: ${paths(log.strayWrites, LISTED_STRAY)}`);
-  }
-  if (log.otherCommands > 0 && level.extras) {
-    parts.push(`${count2(log.otherCommands, "other command")} (file writes, searches, git) not listed.`);
-    summary.push(count2(log.otherCommands, "other command"));
+    summary.push(`written but not in the diff (${log.strayWrites.length})`);
   }
   if (parts.length === 0) return "";
   return `
@@ -1752,7 +1909,7 @@ function render(log, options = {}) {
 `;
   const from = log.sessions.length > 1 ? `${log.sessions.length} agent sessions` : "the agent session";
   const footer = `
-<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool}) \xB7 Redaction: ${count2(log.redaction.hits, "rule")} applied.</sub>
+<sub>Recorded from ${from} on ${code(log.branch)}: observed from tool events, not the model's own account; times are UTC. [What this is](${tool})</sub>
 ${MARKER_END}
 `;
   const look = lookHere(log);
@@ -1764,9 +1921,10 @@ ${MARKER_END}
     const detailsText = details(log, moreLook, moreConfirmed, level);
     const detailsCut = levelIndex === 0 || !anyDetails ? "none" : detailsText ? "some" : "all";
     const note = cutNote(detailsCut, dropped);
+    const second = [contextLine(log), note].filter(Boolean).join(" ");
     const blocks2 = [`
-${checksLine(log)}
-${contextLine(log)}${note ? ` ${note}` : ""}
+${checksLine(log)}${second ? `
+${second}` : ""}
 `];
     if (confirmed.length > 0 && !dropped.includes(CONFIRMED)) {
       blocks2.push(`
@@ -2014,6 +2172,17 @@ function notIgnoredIn(cwd, paths2) {
   if (p.status !== 0 && p.status !== 1) return paths2;
   const ignored = new Set((p.stdout ?? "").split("\n").filter(Boolean));
   return paths2.filter((x) => !ignored.has(x));
+}
+function commitsSince(base, cwd = process.cwd()) {
+  for (const ref of [`origin/${base}`, base]) {
+    const r = git(["log", "--format=%H%x09%cI", `${ref}..HEAD`], cwd);
+    if (!r.ok) continue;
+    return r.out.trim().split("\n").filter(Boolean).map((line) => {
+      const [sha = "", at = ""] = line.split("	");
+      return { sha, at };
+    });
+  }
+  return [];
 }
 
 // src/events/branch.ts
@@ -2722,6 +2891,7 @@ function logMeta(place, base, prUrl) {
     headSha: git2(["rev-parse", "--short", "HEAD"], place.repo),
     repoRoot: place.repo,
     diff: diffAgainst(base, place.repo),
+    commits: commitsSince(base, place.repo),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
     notIgnored: (paths2) => notIgnoredIn(place.repo, paths2)

@@ -18,6 +18,8 @@ const events: TimelineEvent[] = [
   { kind: 'command', id: 'c4', at: '2026-10-03T06:20:00Z', command: 'uv run ruff check --fix .', classification: 'lint', outcome: 'pass' },
   { kind: 'command', id: 'c5', at: '2026-10-03T06:21:00Z', command: 'pnpm --filter @app/web test', classification: 'test', outcome: 'pass' },
   { kind: 'command', id: 'c6', at: '2026-10-03T06:22:00Z', command: 'ls -la', classification: 'other', outcome: 'pass' },
+  { kind: 'command', id: 'g1', at: '2026-10-03T06:22:30Z', command: 'git add -A && git commit -q -m "feat: parse imports"', classification: 'git', outcome: 'pass' },
+  { kind: 'edit', id: 'e9', at: '2026-10-03T06:24:00Z', path: '/repo/services/api/src/parsing.py' },
 ];
 
 const file = (path: string, added: number, isNew = false) => [
@@ -38,6 +40,10 @@ test('a fixed session renders to the golden markdown', () => {
   const md = render(buildLog(events, {
     repo: 'github.com/acme/app', branch: 'feat/imports', headSha: 'abc1234', generatedAt: '2026-10-03T07:00:00Z',
     repoRoot: '/repo', diff, sessions: ['s1'], prUrl: 'https://github.com/acme/app/pull/12',
+    commits: [
+      { sha: '1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', at: '2026-10-03T06:22:29Z' },
+      { sha: '2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', at: '2026-10-03T09:40:00Z' },
+    ],
   }, [{ text: 'Upload storage: Local volume', kind: 'decision', source: 'human-answer', confidence: 'confirmed_by_human' }]));
 
   if (process.env['PDL_UPDATE_GOLDEN'] === '1') writeFileSync(GOLDEN, md);

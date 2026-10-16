@@ -68,7 +68,7 @@ type EpisodeEnd = { passed?: CommandEvent; interruptedBy?: CommandEvent };
  * "after" compares unrelated fragments, and once printed "4 -> 0" for two
  * edits that together added an assertion.
  */
-type FileEdits = { first: EditEvent; last: EditEvent; count: number; viaShell: number; before: number; after: number; unknown: number };
+type FileEdits = { first: EditEvent; last: EditEvent; count: number; viaShell: number; before: number; after: number; unknown: number; cosmetic: number };
 
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
 
@@ -154,6 +154,7 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
   const emit = (failure: CommandEvent, end: EpisodeEnd) => {
     for (const w of window.values()) {
       if (w.unknown === 0 && isPurelyAdditive(w.before, w.after)) continue;
+      if (w.cosmetic === w.count) continue; // Comments only: what the test checks did not change.
       if (w.first.additive && w.last.additive) continue; // Appends only: nothing was taken out.
       const tests = testsIn([failure, ...refails], w.first.path);
       flags.push({
@@ -194,10 +195,11 @@ export function detectTestEditedAfterFailure(events: TimelineEvent[]): Flag[] {
       if (!isTestFile(e.path)) continue;
       if (![openFailure, ...refails].some((f) => failureNamesFile(f.output ?? '', e.path))) continue;
       const known = e.assertionsBefore !== undefined && e.assertionsAfter !== undefined;
-      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0 };
+      const w = window.get(e.path) ?? { first: e, last: e, count: 0, viaShell: 0, before: 0, after: 0, unknown: 0, cosmetic: 0 };
       w.last = e;
       w.count += 1;
       w.viaShell += e.via === 'shell' ? 1 : 0;
+      w.cosmetic += e.cosmetic ? 1 : 0;
       if (known) { w.before += e.assertionsBefore!; w.after += e.assertionsAfter!; } else w.unknown += 1;
       window.set(e.path, w);
     }
