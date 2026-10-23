@@ -38,17 +38,17 @@ function stripHeredocs(command: string): string {
  */
 function blankQuotes(text: string): string {
   let out = '';
-  let quote: string | undefined;
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
-    if (quote) {
-      if (c === '\\' && quote === '"') { i++; continue; }
-      if (c === quote) { quote = undefined; out += c; }
-      continue;
-    }
     if (c === '\\') { out += c + (text[i + 1] ?? ''); i++; continue; }
-    if (c === '"' || c === "'") quote = c;
-    out += c;
+    if (c !== '"' && c !== "'") { out += c; continue; }
+    let j = i + 1;
+    while (j < text.length && text[j] !== c) j += text[j] === '\\' && c === '"' ? 2 : 1;
+    const inner = text.slice(i + 1, j);
+    // One plain word, such as a test name in `--filter "ShelfStoreTests"`,
+    // is kept bare: it cannot hold a separator, a variable or a space.
+    out += /^[\w.:@+=,-]+$/.test(inner) ? inner : `${c}${c}`;
+    i = j;
   }
   return out;
 }

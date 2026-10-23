@@ -3,7 +3,7 @@ import type { DecisionLog } from './build-log.ts';
 import type { Flag, FlagCode } from '../flags/types.ts';
 import type { Outcome } from '../events/types.ts';
 import type { Scope } from '../review/scope.ts';
-import { toolStatuses } from '../review/checks.ts';
+import { toolStatuses, type Check } from '../review/checks.ts';
 
 export const MARKER_START = '<!-- pdl:start';
 export const MARKER_END = '<!-- pdl:end -->';
@@ -191,7 +191,8 @@ function details(log: DecisionLog, moreLook: string[], moreConfirmed: string[], 
   // A check's story is its failures: one that only ever passed is a tick above.
   const failed = log.checks.filter((c) => !c.fixer && c.failures > 0);
   if (failed.length > 0 && level.checks) {
-    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm(c.lastAt)} |`);
+    const result = (c: Check) => (c.supersededBy ? `${c.last}, then ${code(c.supersededBy.command)} passed at ${hhmm(c.supersededBy.at)}` : c.last);
+    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${cell(result(c))} | ${hhmm(c.lastAt)} |`);
     parts.push(`#### Checks that failed\n\n| Check | Runs | Failures | Last result | Last run |\n| --- | --- | --- | --- | --- |\n${rows.join('\n')}`);
     summary.push(`checks that failed (${failed.length})`);
   }

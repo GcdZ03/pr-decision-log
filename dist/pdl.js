@@ -172,27 +172,22 @@ function stripHeredocs(command2) {
 }
 function blankQuotes(text) {
   let out = "";
-  let quote2;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quote2) {
-      if (c === "\\" && quote2 === '"') {
-        i++;
-        continue;
-      }
-      if (c === quote2) {
-        quote2 = void 0;
-        out += c;
-      }
-      continue;
-    }
     if (c === "\\") {
       out += c + (text[i + 1] ?? "");
       i++;
       continue;
     }
-    if (c === '"' || c === "'") quote2 = c;
-    out += c;
+    if (c !== '"' && c !== "'") {
+      out += c;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && text[j] !== c) j += text[j] === "\\" && c === '"' ? 2 : 1;
+    const inner = text.slice(i + 1, j);
+    out += /^[\w.:@+=,-]+$/.test(inner) ? inner : `${c}${c}`;
+    i = j;
   }
   return out;
 }
@@ -1186,6 +1181,7 @@ function isFixer(fragment2) {
 }
 function summariseChecks(events) {
   const byCommand = /* @__PURE__ */ new Map();
+  const passes = /* @__PURE__ */ new Map();
   for (const e of events) {
     if (e.kind !== "command") continue;
     const kind = classifyCommand(e.command);
@@ -1193,6 +1189,7 @@ function summariseChecks(events) {
     const command2 = runnerFragment(e.command);
     if (!command2) continue;
     const failed = e.outcome === "fail" ? 1 : 0;
+    if (e.outcome === "pass") passes.set(command2, [...passes.get(command2) ?? [], e.at]);
     const seen = byCommand.get(command2);
     if (seen) {
       seen.runs += 1;
@@ -1212,7 +1209,18 @@ function summariseChecks(events) {
       });
     }
   }
-  return [...byCommand.values()];
+  const checks = [...byCommand.values()];
+  for (const c of checks) {
+    if (c.last !== "fail") continue;
+    const words = c.command.split(" ");
+    for (const broader of checks) {
+      const b = broader.command.split(" ");
+      if (broader.tool !== c.tool || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
+      const after = (passes.get(broader.command) ?? []).find((at) => at > c.lastAt);
+      if (after && (!c.supersededBy || after < c.supersededBy.at)) c.supersededBy = { command: broader.command, at: after };
+    }
+  }
+  return checks;
 }
 var RANK = { pass: 0, unknown: 1, interrupted: 2, fail: 3 };
 function toolStatuses(checks) {
@@ -1220,8 +1228,9 @@ function toolStatuses(checks) {
   for (const c of checks) {
     if (c.fixer) continue;
     const t = out.find((x) => x.tool === c.tool);
-    if (!t) out.push({ tool: c.tool, status: c.last });
-    else if (RANK[c.last] > RANK[t.status]) t.status = c.last;
+    const last = c.supersededBy ? "pass" : c.last;
+    if (!t) out.push({ tool: c.tool, status: last });
+    else if (RANK[last] > RANK[t.status]) t.status = last;
   }
   return out;
 }
@@ -1848,7 +1857,8 @@ function details(log, moreLook, moreConfirmed, level) {
   const summary = [];
   const failed = log.checks.filter((c) => !c.fixer && c.failures > 0);
   if (failed.length > 0 && level.checks) {
-    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${c.last} | ${hhmm2(c.lastAt)} |`);
+    const result = (c) => c.supersededBy ? `${c.last}, then ${code(c.supersededBy.command)} passed at ${hhmm2(c.supersededBy.at)}` : c.last;
+    const rows = failed.map((c) => `| ${cell(code(c.command))} | ${c.runs} | ${c.failures} | ${cell(result(c))} | ${hhmm2(c.lastAt)} |`);
     parts.push(`#### Checks that failed
 
 | Check | Runs | Failures | Last result | Last run |

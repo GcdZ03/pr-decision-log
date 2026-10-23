@@ -120,3 +120,34 @@ test('toolOf handles option values and special cases correctly', () => {
   ];
   for (const [fragment, tool] of cases) assert.equal(toolOf(fragment), tool, fragment);
 });
+
+// Seen on a real PR: `swift test --filter "ShelfStoreTests"` failed, then the
+// full `swift test` passed three times. The Checks line still said
+// `swift test ✗ (failed, not re-run)`, which was false: the full run re-ran
+// the filtered tests. A later passing run of the same command with fewer
+// arguments covers a narrower failed run.
+test('a narrower failed run is superseded by a later passing broader run of the same tool', () => {
+  const checks = summariseChecks([
+    run('swift test 2>&1 | tail', 'fail', '2026-10-23T23:51:39Z'),
+    run('swift test --filter "ShelfStoreTests" 2>&1', 'fail', '2026-10-23T23:52:18Z'),
+    run('swift test 2>&1 | tail', 'pass', '2026-10-23T23:52:50Z'),
+  ]);
+
+  const filtered = checks.find((c) => c.command === 'swift test --filter ShelfStoreTests');
+  assert.equal(filtered?.last, 'fail');
+  assert.deepEqual(filtered?.supersededBy, { command: 'swift test', at: '2026-10-23T23:52:50Z' });
+  assert.deepEqual(toolStatuses(checks), [{ tool: 'swift test', status: 'pass' }]);
+});
+
+test('a broader run that passed before the narrow failure, or a different narrow run, does not cover it', () => {
+  const before = summariseChecks([run('swift test', 'pass', '2026-10-23T23:50:00Z'), run('swift test --filter A', 'fail', '2026-10-23T23:52:00Z')]);
+  assert.deepEqual(toolStatuses(before), [{ tool: 'swift test', status: 'fail' }]);
+
+  const sibling = summariseChecks([run('uv run pytest -q tests/test_a.py', 'fail', '2026-10-23T23:50:00Z'), run('uv run pytest -q tests/test_b.py', 'pass', '2026-10-23T23:52:00Z')]);
+  assert.deepEqual(toolStatuses(sibling), [{ tool: 'pytest', status: 'fail' }]);
+});
+
+test('the full pytest run covers a single-file run that failed before it', () => {
+  const checks = summariseChecks([run('uv run pytest -q tests/test_a.py', 'fail', '2026-10-23T23:50:00Z'), run('uv run pytest -q', 'pass', '2026-10-23T23:52:00Z')]);
+  assert.deepEqual(toolStatuses(checks), [{ tool: 'pytest', status: 'pass' }]);
+});

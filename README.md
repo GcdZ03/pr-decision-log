@@ -290,6 +290,7 @@ If pdl is registered twice — user and project settings, or plugin and `init` �
 - **Redaction is pattern-based** and will miss novel secret formats. The structural allowlist is the real defence.
 - **The diff rules are shallow regexes**, not parsers. They are tuned against real history for false positives, but that history contains no actual shortcuts, so recall is only evidenced by planted cases and one real agent run.
 - **A PR opened outside the session** (on the web, or from another terminal) is picked up within five minutes, not instantly.
+- **A PR opened inside a long command is logged when the command ends.** Hooks run after a command finishes, so `gh pr create … && gh pr checks --watch` publishes the log once the watch is over, minutes after the PR appears.
 - **If you delete the log from a PR body by hand**, it comes back the next time the log changes, not on the next turn.
 - **Shell writes are read from the command text.** A target in a variable (`> "$OUT"`) is skipped rather than guessed, and a script's writes count only when the path is a literal or a variable assigned one. A write recorded from a command that failed may not have happened.
 - **Where a command ran is read from its leading `cd`.** A `cd` buried after another command, or one into `$(...)`, is not followed; that command counts toward the folder the session was started in. A worktree's log is keyed by the worktree's path, so after the worktree is removed, `pdl build` from another checkout of the same branch will not find it.

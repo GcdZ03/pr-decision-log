@@ -116,3 +116,9 @@ test('a subshell group keeps its runner arguments', () => {
   assert.equal(runnerFragment('cd /w && (just lint && just typecheck && just test) 2>&1 | tail -25'), 'just test');
   assert.equal(runnerFragment('(pnpm test)'), 'pnpm test');
 });
+
+test('a quoted argument that is one plain word, like a test name, is kept in the fragment', () => {
+  assert.equal(runnerFragment('swift test --filter "ShelfStoreTests" 2>&1'), 'swift test --filter ShelfStoreTests');
+  assert.equal(runnerFragment("uv run pytest -k 'not slow'"), 'uv run pytest -k', 'a quoted phrase still ends it');
+  assert.equal(runnerFragment('pytest "/Users/me/tests"'), 'pytest', 'an absolute path in quotes still ends it');
+});
