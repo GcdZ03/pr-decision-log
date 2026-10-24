@@ -170,6 +170,8 @@ function splitHeredocs(command2) {
 function stripHeredocs(command2) {
   return splitHeredocs(command2).text;
 }
+var TEST_FILTER_FLAGS = ["--filter", "-k", "-m", "-t", "--testNamePattern", "--test-name-pattern", "--grep", "-run"];
+var FILTER_FLAG_BEFORE = new RegExp(`(?:^|\\s)(?:${TEST_FILTER_FLAGS.join("|")})[ =]$`);
 function blankQuotes(text) {
   let out = "";
   for (let i = 0; i < text.length; i++) {
@@ -186,7 +188,7 @@ function blankQuotes(text) {
     let j = i + 1;
     while (j < text.length && text[j] !== c) j += text[j] === "\\" && c === '"' ? 2 : 1;
     const inner = text.slice(i + 1, j);
-    out += /^[\w.:@+=,-]+$/.test(inner) ? inner : `${c}${c}`;
+    out += /^[\w.:@+,-]+$/.test(inner) && FILTER_FLAG_BEFORE.test(out) ? inner : `${c}${c}`;
     i = j;
   }
   return out;
@@ -1179,6 +1181,21 @@ function isFixer(fragment2) {
   if (tool === "ruff" && withoutWrapper(fragment2).startsWith("ruff format")) return true;
   return false;
 }
+function onlyNarrows(extra) {
+  for (let i = 0; i < extra.length; i++) {
+    const w = extra[i];
+    if (w === "--") continue;
+    if (TEST_FILTER_FLAGS.includes(w) && extra[i + 1] !== void 0) {
+      i++;
+      continue;
+    }
+    if (TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`))) continue;
+    if (isTestFile(w.split("::")[0])) continue;
+    return false;
+  }
+  return extra.length > 0;
+}
+var selects = (words) => words.some((w) => TEST_FILTER_FLAGS.includes(w) || TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`)) || isTestFile(w.split("::")[0]));
 function summariseChecks(events) {
   const byCommand = /* @__PURE__ */ new Map();
   const passes = /* @__PURE__ */ new Map();
@@ -1211,11 +1228,12 @@ function summariseChecks(events) {
   }
   const checks = [...byCommand.values()];
   for (const c of checks) {
-    if (c.last !== "fail") continue;
+    if (c.last !== "fail" || c.kind !== "test") continue;
     const words = c.command.split(" ");
     for (const broader of checks) {
       const b = broader.command.split(" ");
-      if (broader.tool !== c.tool || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
+      if (broader.tool !== c.tool || broader.kind !== "test" || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
+      if (selects(b) || !onlyNarrows(words.slice(b.length))) continue;
       const after = (passes.get(broader.command) ?? []).find((at) => at > c.lastAt);
       if (after && (!c.supersededBy || after < c.supersededBy.at)) c.supersededBy = { command: broader.command, at: after };
     }

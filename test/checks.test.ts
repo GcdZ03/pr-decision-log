@@ -151,3 +151,53 @@ test('the full pytest run covers a single-file run that failed before it', () =>
   const checks = summariseChecks([run('uv run pytest -q tests/test_a.py', 'fail', '2026-10-23T23:50:00Z'), run('uv run pytest -q', 'pass', '2026-10-23T23:52:00Z')]);
   assert.deepEqual(toolStatuses(checks), [{ tool: 'pytest', status: 'pass' }]);
 });
+
+// Self-review of the rule above: "fewer arguments" is not "broader". Extra
+// arguments can build more (--build-tests), switch project (-p), or point at
+// packages or directories a bare run does not include. Only a test filter or
+// named test files make a run narrower.
+test('fewer arguments that are not a test filter or test files cover nothing', () => {
+  const cases: [string, string][] = [
+    ['swift build --build-tests', 'swift build'],
+    ['npx tsc -p tsconfig.build.json', 'npx tsc'],
+    ['go test ./...', 'go test'],
+    ['uv run pytest integration/', 'uv run pytest'],
+    ['uv run pytest -q --runslow', 'uv run pytest -q'],
+  ];
+  for (const [narrow, broad] of cases) {
+    const statuses = toolStatuses(summariseChecks([run(narrow, 'fail', '2026-10-24T10:01:00Z'), run(broad, 'pass', '2026-10-24T10:02:00Z')]));
+    assert.ok(statuses.some((s) => s.status === 'fail'), `${narrow} then ${broad}: ${JSON.stringify(statuses)}`);
+  }
+});
+
+test('a test filter or named test files make a run narrower, so the full run covers them', () => {
+  const cases: [string, string][] = [
+    ['swift test --filter ShelfStoreTests', 'swift test'],
+    ['uv run pytest -q -k ranking', 'uv run pytest -q'],
+    ['uv run pytest -q tests/test_a.py tests/test_b.py::test_x', 'uv run pytest -q'],
+    ['npx vitest run src/lib/review.test.ts', 'npx vitest run'],
+    ['go test ./... -run TestRank', 'go test ./...'],
+    ['pnpm test -- -t keeps', 'pnpm test --'],
+  ];
+  for (const [narrow, broad] of cases) {
+    const statuses = toolStatuses(summariseChecks([run(narrow, 'fail', '2026-10-24T10:01:00Z'), run(broad, 'pass', '2026-10-24T10:02:00Z')]));
+    assert.ok(statuses.every((s) => s.status === 'pass'), `${narrow} then ${broad}: ${JSON.stringify(statuses)}`);
+  }
+});
+
+// Found by sweeping the real sessions: `node --test a.test.ts b.test.ts`
+// failing was counted as covered by `node --test a.test.ts` passing. A run that
+// already selects tests is not the full run; adding files to it widens it.
+test('a run that itself selects tests covers nothing', () => {
+  const statuses = toolStatuses(summariseChecks([
+    run('node --test test/a.test.ts test/b.test.ts', 'fail', '2026-10-24T10:01:00Z'),
+    run('node --test test/a.test.ts', 'pass', '2026-10-24T10:02:00Z'),
+  ]));
+  assert.deepEqual(statuses, [{ tool: 'node --test', status: 'fail' }]);
+
+  const filtered = toolStatuses(summariseChecks([
+    run('swift test --filter A --filter B', 'fail', '2026-10-24T10:01:00Z'),
+    run('swift test --filter A', 'pass', '2026-10-24T10:02:00Z'),
+  ]));
+  assert.deepEqual(filtered, [{ tool: 'swift test', status: 'fail' }]);
+});

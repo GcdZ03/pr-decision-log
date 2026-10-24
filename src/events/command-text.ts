@@ -36,6 +36,10 @@ function stripHeredocs(command: string): string {
  * lines (`gh pr create --body "..."`), and its lines would otherwise be read
  * as commands; it can also hold a `|` or `;` that is not a separator.
  */
+/** Options whose value selects which tests run. */
+export const TEST_FILTER_FLAGS = ['--filter', '-k', '-m', '-t', '--testNamePattern', '--test-name-pattern', '--grep', '-run'];
+const FILTER_FLAG_BEFORE = new RegExp(`(?:^|\\s)(?:${TEST_FILTER_FLAGS.join('|')})[ =]$`);
+
 function blankQuotes(text: string): string {
   let out = '';
   for (let i = 0; i < text.length; i++) {
@@ -45,9 +49,11 @@ function blankQuotes(text: string): string {
     let j = i + 1;
     while (j < text.length && text[j] !== c) j += text[j] === '\\' && c === '"' ? 2 : 1;
     const inner = text.slice(i + 1, j);
-    // One plain word, such as a test name in `--filter "ShelfStoreTests"`,
-    // is kept bare: it cannot hold a separator, a variable or a space.
-    out += /^[\w.:@+=,-]+$/.test(inner) ? inner : `${c}${c}`;
+    // A test filter's value, such as `--filter "ShelfStoreTests"`, is kept
+    // bare when it is one plain word: it names tests the diff already shows.
+    // Any other quoted argument stays empty, so a quote still ends what is
+    // published (`--token "hunter2"` publishes no token).
+    out += /^[\w.:@+,-]+$/.test(inner) && FILTER_FLAG_BEFORE.test(out) ? inner : `${c}${c}`;
     i = j;
   }
   return out;

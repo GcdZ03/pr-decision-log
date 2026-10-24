@@ -122,3 +122,9 @@ test('a quoted argument that is one plain word, like a test name, is kept in the
   assert.equal(runnerFragment("uv run pytest -k 'not slow'"), 'uv run pytest -k', 'a quoted phrase still ends it');
   assert.equal(runnerFragment('pytest "/Users/me/tests"'), 'pytest', 'an absolute path in quotes still ends it');
 });
+
+test('a quoted word is kept only as a test filter value, never anywhere else', () => {
+  assert.equal(runnerFragment('uv run pytest -k "ranking"'), 'uv run pytest -k ranking');
+  assert.equal(runnerFragment('npm test -- --token "hunter2"'), 'npm test -- --token', 'a quote still ends the fragment elsewhere');
+  assert.equal(runnerFragment('pytest "tests"'), 'pytest');
+});
