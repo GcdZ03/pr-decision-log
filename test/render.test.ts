@@ -359,3 +359,13 @@ test('a test-edit flag quotes the assertion changes the diff shows', () => {
   const md = render(buildLog(flagged('test_old'), { ...meta, diff }));
   assert.match(md, /it passed at 03:13\. 1 assertion removed overall\. Diff: `assert order == \[MAR, OCT\]` → `assert order == \[OCT, MAR\]`\.\n/);
 });
+
+test('a failed check a broader run later covered says so in the table, and the tool reads as passing', () => {
+  const md = render(buildLog([
+    { kind: 'command', id: 's1', at: '2026-10-23T23:52:18Z', command: 'swift test --filter "ShelfStoreTests"', classification: 'test', outcome: 'fail' },
+    { kind: 'command', id: 's2', at: '2026-10-23T23:52:50Z', command: 'swift test', classification: 'test', outcome: 'pass' },
+  ], meta));
+
+  assert.match(md, /\*\*Checks \(last run\):\*\* swift test ✓/);
+  assert.match(md, /\| `swift test --filter ShelfStoreTests` \| 1 \| 1 \| fail, then `swift test` passed at 23:52 \| 23:52 \|/);
+});

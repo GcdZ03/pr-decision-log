@@ -1,6 +1,7 @@
 import type { Outcome, TimelineEvent } from '../events/types.ts';
 import { classifyCommand } from '../events/classify-command.ts';
-import { runnerFragment, withoutWrapper } from '../events/command-text.ts';
+import { runnerFragment, TEST_FILTER_FLAGS, withoutWrapper } from '../events/command-text.ts';
+import { isTestFile } from '../flags/test-files.ts';
 
 /** One distinct runner fragment and what happened each time it ran. */
 export type Check = {
@@ -15,6 +16,12 @@ export type Check = {
   lastAt: string;
   /** Rewrites files (`--fix`, `--write`, `format`): an auto-fix, never a check. */
   fixer: boolean;
+  /**
+   * A last failure that a broader run of the same tool covered: the same
+   * command with fewer arguments (`swift test` after `swift test --filter X`)
+   * passed after it. The failure stays visible; it is no longer the verdict.
+   */
+  supersededBy?: { command: string; at: string };
 };
 
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
@@ -117,8 +124,31 @@ export function isFixer(fragment: string): boolean {
  * fragment in first-seen order. Classification happens here, from the text,
  * so events recorded by older versions are read with today's rules.
  */
+/**
+ * Whether extra arguments only select which tests run: a test filter and its
+ * value, or named test files and test ids. Anything else (another project,
+ * more targets, a directory, `./...`, a flag such as `--build-tests`) can
+ * make a run broader or different, so a bare run passing says nothing about it.
+ */
+function onlyNarrows(extra: string[]): boolean {
+  for (let i = 0; i < extra.length; i++) {
+    const w = extra[i]!;
+    if (w === '--') continue;
+    if (TEST_FILTER_FLAGS.includes(w) && extra[i + 1] !== undefined) { i++; continue; }
+    if (TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`))) continue;
+    if (isTestFile(w.split('::')[0]!)) continue;
+    return false;
+  }
+  return extra.length > 0;
+}
+
+/** Whether a run already selects tests (a filter or named test files): then it is not the full run. */
+const selects = (words: string[]): boolean =>
+  words.some((w) => TEST_FILTER_FLAGS.includes(w) || TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`)) || isTestFile(w.split('::')[0]!));
+
 export function summariseChecks(events: TimelineEvent[]): Check[] {
   const byCommand = new Map<string, Check>();
+  const passes = new Map<string, string[]>();
   for (const e of events) {
     if (e.kind !== 'command') continue;
     const kind = classifyCommand(e.command);
@@ -127,6 +157,7 @@ export function summariseChecks(events: TimelineEvent[]): Check[] {
     if (!command) continue;
 
     const failed = e.outcome === 'fail' ? 1 : 0;
+    if (e.outcome === 'pass') passes.set(command, [...(passes.get(command) ?? []), e.at]);
     const seen = byCommand.get(command);
     if (seen) {
       seen.runs += 1;
@@ -140,7 +171,19 @@ export function summariseChecks(events: TimelineEvent[]): Check[] {
       });
     }
   }
-  return [...byCommand.values()];
+  const checks = [...byCommand.values()];
+  for (const c of checks) {
+    if (c.last !== 'fail' || c.kind !== 'test') continue;
+    const words = c.command.split(' ');
+    for (const broader of checks) {
+      const b = broader.command.split(' ');
+      if (broader.tool !== c.tool || broader.kind !== 'test' || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
+      if (selects(b) || !onlyNarrows(words.slice(b.length))) continue;
+      const after = (passes.get(broader.command) ?? []).find((at) => at > c.lastAt);
+      if (after && (!c.supersededBy || after < c.supersededBy.at)) c.supersededBy = { command: broader.command, at: after };
+    }
+  }
+  return checks;
 }
 
 export type ToolStatus = { tool: string; status: Outcome };
@@ -157,8 +200,9 @@ export function toolStatuses(checks: Check[]): ToolStatus[] {
   for (const c of checks) {
     if (c.fixer) continue;
     const t = out.find((x) => x.tool === c.tool);
-    if (!t) out.push({ tool: c.tool, status: c.last });
-    else if (RANK[c.last] > RANK[t.status]) t.status = c.last;
+    const last = c.supersededBy ? 'pass' : c.last;
+    if (!t) out.push({ tool: c.tool, status: last });
+    else if (RANK[last] > RANK[t.status]) t.status = last;
   }
   return out;
 }
