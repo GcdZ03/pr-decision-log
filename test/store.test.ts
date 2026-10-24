@@ -167,3 +167,22 @@ test('pruneIfDue runs at most once a day, so the Stop hook is not scanning on ev
     assert.equal(store.pruneIfDue(30, now + 2 * 86_400_000), 1);
   });
 });
+
+test('remembered places are kept per session and go with it on prune and purge', () => {
+  withStore((store, root) => {
+    store.append('old', cmd('a'));
+    store.append('new', cmd('b'));
+    store.rememberPlace('old', '/w/a', { repo: '/w/a', branch: 'feat/a', main: '/r' });
+    store.rememberPlace('new', '/w/b', { repo: '/w/b', branch: 'feat/b' });
+    store.rememberPlace('new', '/tmp', { repo: '', branch: '' });
+    assert.deepEqual(Object.keys(store.rememberedPlaces('new')), ['/w/b', '/tmp']);
+
+    age(root, 'old', 40);
+    store.prune(30, Date.now());
+    assert.deepEqual(store.rememberedPlaces('old'), {});
+    assert.equal(store.rememberedPlaces('new')['/w/b']?.branch, 'feat/b');
+
+    store.purge();
+    assert.deepEqual(store.rememberedPlaces('new'), {});
+  });
+});

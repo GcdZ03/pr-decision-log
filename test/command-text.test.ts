@@ -128,3 +128,13 @@ test('a quoted word is kept only as a test filter value, never anywhere else', (
   assert.equal(runnerFragment('npm test -- --token "hunter2"'), 'npm test -- --token', 'a quote still ends the fragment elsewhere');
   assert.equal(runnerFragment('pytest "tests"'), 'pytest');
 });
+
+// Agents re-run flaky suites in a loop; 24 recorded runs like this were
+// classified "other" and dropped from the checks.
+test('a runner inside a loop or a condition is a run', () => {
+  assert.equal(classifyCommand('for i in 1 2 3; do swift test 2>&1 | grep -E "Test run with" | head -4; done'), 'test');
+  assert.equal(runnerFragment('for i in 1 2 3; do swift test 2>&1 | head; done'), 'swift test');
+  assert.equal(runnerFragment('if npm test; then echo ok; fi'), 'npm test');
+  assert.equal(runnerFragment('until uv run pytest -q; do sleep 1; done'), 'uv run pytest -q');
+  assert.equal(classifyCommand('for f in *.swift; do wc -l "$f"; done'), 'other');
+});

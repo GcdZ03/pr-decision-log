@@ -119,35 +119,76 @@ export function isFixer(fragment: string): boolean {
   return false;
 }
 
+/** Flags that change what a test run prints or when it stops, not which tests it runs. */
+const OUTPUT_FLAGS = new Set(['-q', '--quiet', '-v', '-vv', '-vvv', '--verbose', '-s', '-x', '--exitfirst', '--no-header', '--silent', '--bail', '--skip-build']);
+
+/** A run's words without its output flags, so `pytest -q -x` and `pytest -q` read as the same run. */
+function withoutOutputFlags(words: string[], tool: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (OUTPUT_FLAGS.has(w) || /^--(?:tb|maxfail|color|reporter)=/.test(w)) continue;
+    // `-p no:<plugin>` turns a pytest plugin off (its cache, random order);
+    // the value may have been left out of the fragment.
+    if (tool === 'pytest' && w === '-p' && (words[i + 1] === undefined || words[i + 1]!.startsWith('no:'))) { i++; continue; }
+    out.push(w);
+  }
+  return out;
+}
+
+const isPath = (w: string): boolean => !w.startsWith('-') && (w.includes('/') || w === '.' || isTestFile(w.split('::')[0]!));
+const normPath = (w: string): string => w.split('::')[0]!.replace(/^\.\//, '').replace(/\/$/, '');
+
 /**
- * Every test, build and lint run, folded into one entry per distinct runner
- * fragment in first-seen order. Classification happens here, from the text,
- * so events recorded by older versions are read with today's rules.
+ * A run's paths (files, directories, test ids) apart from its other words,
+ * with test filters and their values dropped: a filter only narrows. A
+ * filter flag with no value after it had its value blanked as quoted text
+ * (`--filter "A|B"`), and still narrows.
  */
-/**
- * Whether extra arguments only select which tests run: a test filter and its
- * value, or named test files and test ids. Anything else (another project,
- * more targets, a directory, `./...`, a flag such as `--build-tests`) can
- * make a run broader or different, so a bare run passing says nothing about it.
- */
-function onlyNarrows(extra: string[]): boolean {
-  for (let i = 0; i < extra.length; i++) {
-    const w = extra[i]!;
+function scopeOf(words: string[]): { paths: string[]; rest: string[] } {
+  const paths: string[] = [];
+  const rest: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
     if (w === '--') continue;
-    // A filter flag with no value after it had its value blanked as quoted
-    // text (`--filter "A|B"`), which still narrows.
     if (TEST_FILTER_FLAGS.includes(w)) { i++; continue; }
     if (TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`))) continue;
-    if (isTestFile(w.split('::')[0]!)) continue;
-    return false;
+    if (isPath(w)) { const p = normPath(w); if (p !== '.' && p !== '') paths.push(p); } else rest.push(w);
   }
-  return extra.length > 0;
+  return { paths, rest };
+}
+
+/**
+ * Whether a passing run ran every test a failed run did. It must be the same
+ * command apart from output flags, test filters and paths, and must not select
+ * tests itself. Each path the failed run named must be one the passing run
+ * named, or inside a directory it named; with no paths, the passing run is the
+ * whole suite, which covers named test files but not a directory (`pytest
+ * integration/` may hold tests a bare run skips) or `./...`. A linter checks
+ * each file on its own, so its whole-project run covers any directory too.
+ */
+function covers(failed: string[], broader: string[], tool: string, kind: Check['kind']): boolean {
+  const f = withoutOutputFlags(failed, tool);
+  const b = withoutOutputFlags(broader, tool);
+  if (f.join(' ') === b.join(' ')) return true;
+  if (selects(b)) return false;
+  const fs = scopeOf(f);
+  const bs = scopeOf(b);
+  if (fs.rest.join(' ') !== bs.rest.join(' ')) return false;
+  if (bs.paths.length === 0) return kind === 'lint' || fs.paths.every((p) => isTestFile(p));
+  if (fs.paths.length === 0) return false;
+  return fs.paths.every((p) => bs.paths.some((d) => p === d || (!d.includes('...') && p.startsWith(`${d}/`))));
 }
 
 /** Whether a run already selects tests (a filter or named test files): then it is not the full run. */
 const selects = (words: string[]): boolean =>
   words.some((w) => TEST_FILTER_FLAGS.includes(w) || TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`)) || isTestFile(w.split('::')[0]!));
 
+/**
+ * Every test, build and lint run, folded into one entry per distinct runner
+ * fragment in first-seen order. Classification happens here, from the text,
+ * so events recorded by older versions are read with today's rules.
+ */
 export function summariseChecks(events: TimelineEvent[]): Check[] {
   const byCommand = new Map<string, Check>();
   const passes = new Map<string, string[]>();
@@ -175,12 +216,10 @@ export function summariseChecks(events: TimelineEvent[]): Check[] {
   }
   const checks = [...byCommand.values()];
   for (const c of checks) {
-    if (c.last !== 'fail' || c.kind !== 'test') continue;
-    const words = c.command.split(' ');
+    if (c.last !== 'fail' || c.fixer || (c.kind !== 'test' && c.kind !== 'lint')) continue;
     for (const broader of checks) {
-      const b = broader.command.split(' ');
-      if (broader.tool !== c.tool || broader.kind !== 'test' || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
-      if (selects(b) || !onlyNarrows(words.slice(b.length))) continue;
+      if (broader === c || broader.tool !== c.tool || broader.kind !== c.kind || broader.fixer) continue;
+      if (!covers(c.command.split(' '), broader.command.split(' '), c.tool, c.kind)) continue;
       const after = (passes.get(broader.command) ?? []).find((at) => at > c.lastAt);
       if (after && (!c.supersededBy || after < c.supersededBy.at)) c.supersededBy = { command: broader.command, at: after };
     }

@@ -180,3 +180,62 @@ test('a PR opened from a worktree of another repository gets its log there', () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// CreativeNotch PR #54: a session ran its tests in a worktree, saw them fail,
+// fixed them, saw them pass, then deleted the worktree before its turn ended.
+// The Stop hook could no longer ask git which branch that folder was on, so
+// the passing runs were never attributed and the PR kept `swift test ✗`.
+test('a worktree deleted before the turn ends still publishes its runs to its branch', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdl-gone-'));
+  try {
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    const atlas = join(dir, 'atlas');
+    const wt = join(dir, 'atlas-wt');
+    mkdirSync(atlas);
+    git(atlas, 'init', '-q', '-b', 'main');
+    git(atlas, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    git(atlas, 'worktree', 'add', '-q', '-b', 'feat/cal', wt);
+    const atlasRoot = git(atlas, 'rev-parse', '--show-toplevel');
+
+    // gh has a PR only for `feat/cal`, named or checked out.
+    const bin = join(dir, 'bin');
+    const calls = join(dir, 'gh-calls.txt');
+    const body = join(dir, 'pr-body.md');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), [
+      '#!/bin/sh',
+      `echo "$(git rev-parse --show-toplevel 2>/dev/null)|$*" >> "${calls}"`,
+      'case "$1 $2" in',
+      `  "pr view") [ "$3" = "feat/cal" ] || [ "$(git symbolic-ref --short -q HEAD)" = "feat/cal" ] || { echo "no pull requests found" >&2; exit 1; }`,
+      `    echo '{"number":54,"body":"Calendar.","baseRefName":"main","url":"https://github.com/o/atlas/pull/54"}' ;;`,
+      `  "pr edit") cat > "${body}" ;;`,
+      '  *) exit 1 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const session = 'sess-gone';
+    const base = { session_id: session, cwd: atlas, transcript_path: join(dir, 'none.jsonl') };
+    const store = join(dir, 'store');
+    const send = (payload: Record<string, unknown>) => {
+      const p = spawnSync('node', [PDL, 'hook'], {
+        cwd: atlas, input: JSON.stringify(payload), encoding: 'utf8',
+        env: { ...process.env, PDL_DISABLE: '', PDL_HOME: store, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+      });
+      assert.equal(p.status, 0, p.stderr);
+    };
+    send({ ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_use_id: 't1',
+      tool_input: { command: `cd ${wt} && swift test` }, error: 'Exit code 1\n✘ Test run with 2 failures' });
+    send({ ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 't2',
+      tool_input: { command: `cd ${wt} && swift test` }, tool_response: { stdout: '✔ Test run passed', stderr: '' } });
+    git(atlas, 'worktree', 'remove', wt);
+    send({ ...base, hook_event_name: 'Stop' });
+
+    const ghCalls = readFileSync(calls, 'utf8').trim().split('\n');
+    assert.ok(ghCalls.some((c) => c === `${atlasRoot}|pr view feat/cal --json number,body,baseRefName,url`), ghCalls.join('\n'));
+    assert.ok(ghCalls.some((c) => c.startsWith(`${atlasRoot}|pr edit 54`)), ghCalls.join('\n'));
+    assert.match(readFileSync(body, 'utf8'), /swift test ✓/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

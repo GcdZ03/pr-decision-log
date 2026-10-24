@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { EventStore } from './events/store.ts';
+import { EventStore, type RememberedPlace } from './events/store.ts';
 import { handleHook } from './events/handle-hook.ts';
 import { detectTestEditedAfterFailure } from './flags/test-edited-after-failure.ts';
 import { buildLog } from './render/build-log.ts';
@@ -26,8 +26,8 @@ import { classifyCommand } from './events/classify-command.ts';
 import { expandWrites } from './events/expand-writes.ts';
 import { compileExtraPatterns, redact } from './render/redact.ts';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 /**
  * A reader that stops early, like `pdl build | head`, closes the pipe while pdl
@@ -66,34 +66,71 @@ function placeIn(dir: string): Place | undefined {
 }
 
 /**
+ * Remember where an event's directory is, the first time the session works in
+ * that working tree: one or two git calls per worktree per session. A
+ * subagent's worktree is often deleted before its turn ends, and the Stop hook
+ * can then no longer ask git which branch it was on.
+ */
+function rememberPlace(store: EventStore, sessionId: string, dir: string): void {
+  const known = Object.entries(store.rememberedPlaces(sessionId));
+  if (known.some(([d, p]) => d === dir || (p.repo !== '' && (dir === p.repo || dir.startsWith(`${p.repo}/`))))) return;
+  const out = git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], dir).split('\n');
+  const [repo, common] = out;
+  // Outside any repository: remembered as such, so the next event there costs no git call.
+  if (!repo) return store.rememberPlace(sessionId, dir, { repo: '', branch: '' });
+  const main = common?.endsWith('/.git') ? dirname(common) : undefined;
+  store.rememberPlace(sessionId, dir, { repo, branch: currentBranch(dir), ...(main && main !== repo ? { main } : {}) });
+}
+
+/** The remembered place for a directory whose working tree no longer exists. */
+function gonePlace(remembered: Record<string, RememberedPlace>, dir: string): RememberedPlace | undefined {
+  const p = remembered[dir] ?? Object.values(remembered).find((r) => r.repo !== '' && (dir === r.repo || dir.startsWith(`${r.repo}/`)));
+  return p && p.repo !== '' && !existsSync(p.repo) ? p : undefined;
+}
+
+/**
  * `placeIn` for one turn, reusing a working tree already found for any
  * directory inside it: a subagent editing ten folders of one worktree costs
  * two git calls, not twenty. A nested repository or submodule inside a found
  * tree would be missed; neither is common enough to pay for on every turn.
+ * A directory in a worktree deleted since falls back to where it was.
  */
-function placeResolver(): (dir: string) => Place | undefined {
+function placeResolver(remembered: Record<string, RememberedPlace> = {}): (dir: string) => Place | undefined {
   const found: Place[] = [];
   return (dir) => {
     const known = found.find((p) => dir === p.repo || dir.startsWith(`${p.repo}/`));
     if (known) return known;
-    const p = placeIn(dir);
+    const gone = gonePlace(remembered, dir);
+    const p = placeIn(dir) ?? (gone ? { repo: gone.repo, branch: gone.branch } : undefined);
     if (p) found.push(p);
     return p;
   };
 }
 
-function logMeta(place: Place, base: string, prUrl?: string) {
+/**
+ * Where git and gh run for a place: its own working tree, or, once that was
+ * deleted, the repository's main working tree, naming the branch instead of
+ * HEAD. Undefined when neither exists.
+ */
+type GitAt = { cwd: string; head: string; branch?: string };
+function gitAt(place: Place, remembered: Record<string, RememberedPlace>): GitAt | undefined {
+  if (existsSync(place.repo)) return { cwd: place.repo, head: 'HEAD' };
+  const main = Object.values(remembered).find((r) => r.repo === place.repo && r.main)?.main;
+  return main && existsSync(main) && place.branch ? { cwd: main, head: place.branch, branch: place.branch } : undefined;
+}
+
+function logMeta(place: Place, base: string, prUrl?: string, at: GitAt = { cwd: place.repo, head: 'HEAD' }) {
   return {
     ...(prUrl ? { prUrl } : {}),
-    repo: git(['remote', 'get-url', 'origin'], place.repo) || 'unknown',
+    repo: git(['remote', 'get-url', 'origin'], at.cwd) || 'unknown',
     branch: place.branch || 'detached',
-    headSha: git(['rev-parse', '--short', 'HEAD'], place.repo),
+    headSha: git(['rev-parse', '--short', at.head], at.cwd),
     repoRoot: place.repo,
-    diff: diffAgainst(base, place.repo),
-    commits: commitsSince(base, place.repo),
+    diff: diffAgainst(base, at.cwd, at.head),
+    commits: commitsSince(base, at.cwd, at.head),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
-    notIgnored: (paths: string[]) => notIgnoredIn(place.repo, paths),
+    notIgnored: (paths: string[]) => notIgnoredIn(at.cwd, paths),
   };
 }
 
@@ -111,7 +148,7 @@ function renderSession(store: EventStore, sessionId: string): string {
  * The branch's log: every session that worked on it, merged in time order, so
  * one PR carries one log however many sessions it took.
  */
-function renderBranch(store: EventStore, place: Place, base: string, prUrl?: string): string {
+function renderBranch(store: EventStore, place: Place, base: string, prUrl?: string, at?: GitAt): string {
   const merged = eventsForBranch(store, place.repo, place.branch);
 
   const seen = new Set<string>();
@@ -128,7 +165,7 @@ function renderBranch(store: EventStore, place: Place, base: string, prUrl?: str
     return true;
   });
 
-  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl, at), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 
@@ -180,6 +217,7 @@ async function hook(store: EventStore): Promise<void> {
     const payload = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
     const event = handleHook(store, payload);
     const sessionId = typeof payload['session_id'] === 'string' ? payload['session_id'] : '';
+    if (sessionId && event && 'dir' in event && event.dir) rememberPlace(store, sessionId, event.dir);
 
     // Two triggers. `gh pr create` is when the pull request first exists, and
     // `Stop` catches everything that happened after it was opened.
@@ -194,7 +232,8 @@ async function hook(store: EventStore): Promise<void> {
     const home: Place = { repo: repoRoot(), branch: currentBranch() };
     const turns = store.turns().filter((t) => t.session === sessionId);
     const since = turns[turns.length - 1]?.at ?? '';
-    const plan = planTurn(store.read(sessionId).filter((e) => e.at > since), home, placeResolver());
+    const remembered = store.rememberedPlaces(sessionId);
+    const plan = planTurn(store.read(sessionId).filter((e) => e.at > since), home, placeResolver(remembered));
 
     // Marks every event since the last turn with where it happened.
     const transcript = typeof payload['transcript_path'] === 'string' ? payload['transcript_path'] : undefined;
@@ -214,14 +253,17 @@ async function hook(store: EventStore): Promise<void> {
     const createdAt = created && event ? placeOf(event, [turn]) : undefined;
     const targets = createdAt ? [createdAt].filter((p) => p.branch !== '') : plan.touched;
     for (const place of targets) {
+      const at = gitAt(place, remembered);
+      if (!at) continue;
       await autoPublish({
         key: `${place.repo}#${place.branch}`,
         created,
         mode: config.publish.mode,
-        defaultBase: defaultBase(place.repo),
+        defaultBase: defaultBase(at.cwd),
+        ...(at.branch ? { branch: at.branch } : {}),
         state: publishState,
-        gh: ghIn(place.repo),
-        build: (base, url) => renderBranch(store, place, base, url),
+        gh: ghIn(at.cwd),
+        build: (base, url) => renderBranch(store, place, base, url, at),
       });
     }
   } catch {

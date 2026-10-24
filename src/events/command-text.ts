@@ -77,13 +77,19 @@ export function scriptSkeleton(command: string): string {
 /** Lines that merely mention a runner (comments, banner echoes) are not invocations. */
 const NOT_INVOCATION = /^\s*(#|echo\b|printf\b)/;
 
+/**
+ * Shell keywords that open a command inside a loop or a condition:
+ * `for i in 1 2 3; do swift test; done` runs `swift test`.
+ */
+const LEADING_KEYWORDS = /^(?:(?:do|then|else|if|elif|while|until|!|\{)\s+)+/;
+
 /** The script's command segments, split at separators, comments and echoes dropped. */
 export function commandSegments(command: string): string[] {
   return scriptSkeleton(command)
     .split('\n')
     .filter((l) => l.trim() && !NOT_INVOCATION.test(l))
     .flatMap((l) => l.replace(/\d*>&\d+|&>/g, '>').split(/&&|\|\||[;|&]/))
-    .map((s) => s.replace(/[()]/g, ' ').trim())
+    .map((s) => s.replace(/[()]/g, ' ').trim().replace(LEADING_KEYWORDS, ''))
     .filter((s) => s && !NOT_INVOCATION.test(s));
 }
 

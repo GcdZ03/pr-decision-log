@@ -215,3 +215,57 @@ test('a run that itself selects tests covers nothing', () => {
   ]));
   assert.deepEqual(filtered, [{ tool: 'swift test', status: 'fail' }]);
 });
+
+// Found by sweeping 55 published logs for 0.1.10: six PRs kept a ✗ that a
+// later passing run had covered, because the two runs differed in output
+// flags, or the passing run named the directory holding the failed file.
+test('a passing run covers a failure that differs only in output flags or sits in a directory it ran', () => {
+  const cases: [string, string][] = [
+    ['uv run pytest services/operator-api -q -x', 'uv run pytest services/operator-api -q'],
+    ['uv run pytest services/conduit-api/tests/test_audit.py', 'uv run pytest services/conduit-api/tests/test_audit.py -q'],
+    ['uv run pytest services/operator-api/tests/test_delegation.py -q', 'uv run pytest services/operator-api -q'],
+    ['uv run pytest workers/import-worker/tests/test_chaos.py -x -q -p', 'uv run pytest workers/import-worker/tests/test_chaos.py -q -p no:cacheprovider'],
+    ['swift test --skip-build --filter', 'swift test'],
+    ['uv run pytest services/a/tests -q', 'uv run pytest services/a'],
+  ];
+  for (const [narrow, broad] of cases) {
+    const statuses = toolStatuses(summariseChecks([run(narrow, 'fail', '2026-10-24T10:01:00Z'), run(broad, 'pass', '2026-10-24T10:02:00Z')]));
+    assert.ok(statuses.every((s) => s.status === 'pass'), `${narrow} then ${broad}: ${JSON.stringify(statuses)}`);
+  }
+});
+
+test('a directory covers only what is inside it, and a whole-suite filter is not covered by a directory', () => {
+  const cases: [string, string][] = [
+    ['uv run pytest services/b/tests/test_x.py', 'uv run pytest services/a'],
+    ['uv run pytest services/ab/tests/test_x.py', 'uv run pytest services/a'],
+    ['uv run pytest -k ranking', 'uv run pytest services/a'],
+    ['uv run pytest services/a services/b', 'uv run pytest services/a'],
+    ['uv run pytest services/a -q --runslow', 'uv run pytest services/a -q'],
+  ];
+  for (const [narrow, broad] of cases) {
+    const statuses = toolStatuses(summariseChecks([run(narrow, 'fail', '2026-10-24T10:01:00Z'), run(broad, 'pass', '2026-10-24T10:02:00Z')]));
+    assert.ok(statuses.some((s) => s.status === 'fail'), `${narrow} then ${broad}: ${JSON.stringify(statuses)}`);
+  }
+});
+
+// atlas-platform #50 and #79: `ruff check <dir>` failed, then the whole project
+// passed `ruff check .`. A linter checks each file on its own.
+test('a whole-project lint run covers a failed lint of a directory; a fix run covers nothing', () => {
+  const covered = summariseChecks([
+    run('uv run ruff check services/conduit-api', 'fail', '2026-10-24T10:01:00Z'),
+    run('uv run ruff check . -q', 'pass', '2026-10-24T10:02:00Z'),
+  ]);
+  assert.deepEqual(toolStatuses(covered), [{ tool: 'ruff', status: 'pass' }]);
+
+  const fixed = summariseChecks([
+    run('uv run ruff check services/a', 'fail', '2026-10-24T10:01:00Z'),
+    run('uv run ruff check --fix services/a', 'pass', '2026-10-24T10:02:00Z'),
+  ]);
+  assert.ok(toolStatuses(fixed).some((s) => s.status === 'fail'));
+
+  const other = summariseChecks([
+    run('uv run ruff check services/a', 'fail', '2026-10-24T10:01:00Z'),
+    run('uv run ruff check services/b', 'pass', '2026-10-24T10:02:00Z'),
+  ]);
+  assert.ok(toolStatuses(other).some((s) => s.status === 'fail'));
+});

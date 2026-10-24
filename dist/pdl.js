@@ -18,9 +18,27 @@ var EventStore = class {
    * that is not a plain id is hashed rather than rejected: the store must never
    * lose events, and must never write outside its own directory.
    */
+  #safeId(sessionId) {
+    return /^[A-Za-z0-9._-]{1,128}$/.test(sessionId) && !sessionId.startsWith(".") ? sessionId : createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+  }
   #fileFor(sessionId) {
-    const safe = /^[A-Za-z0-9._-]{1,128}$/.test(sessionId) && !sessionId.startsWith(".") ? sessionId : createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
-    return join(this.#dir, `${safe}.jsonl`);
+    return join(this.#dir, `${this.#safeId(sessionId)}.jsonl`);
+  }
+  #placesFile(sessionId) {
+    return join(this.#root, "places", `${this.#safeId(sessionId)}.json`);
+  }
+  /** The places remembered for a session's directories, by directory. */
+  rememberedPlaces(sessionId) {
+    try {
+      return JSON.parse(readFileSync(this.#placesFile(sessionId), "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  rememberPlace(sessionId, dir, place) {
+    const all = { ...this.rememberedPlaces(sessionId), [dir]: place };
+    mkdirSync(join(this.#root, "places"), { recursive: true, mode: 448 });
+    writeFileSync(this.#placesFile(sessionId), JSON.stringify(all));
   }
   append(sessionId, event) {
     mkdirSync(this.#dir, { recursive: true, mode: 448 });
@@ -47,6 +65,7 @@ var EventStore = class {
   purge() {
     const files = this.#sessionFiles();
     for (const f of files) rmSync(join(this.#dir, f), { force: true });
+    rmSync(join(this.#root, "places"), { recursive: true, force: true });
     return files.length;
   }
   #turnsFile() {
@@ -87,6 +106,7 @@ var EventStore = class {
       try {
         if (statSync(path).mtimeMs < cutoff) {
           rmSync(path, { force: true });
+          rmSync(this.#placesFile(f.slice(0, -".jsonl".length)), { force: true });
           removed++;
         }
       } catch {
@@ -197,8 +217,9 @@ function scriptSkeleton(command2) {
   return blankQuotes(stripHeredocs(command2));
 }
 var NOT_INVOCATION = /^\s*(#|echo\b|printf\b)/;
+var LEADING_KEYWORDS = /^(?:(?:do|then|else|if|elif|while|until|!|\{)\s+)+/;
 function commandSegments(command2) {
-  return scriptSkeleton(command2).split("\n").filter((l) => l.trim() && !NOT_INVOCATION.test(l)).flatMap((l) => l.replace(/\d*>&\d+|&>/g, ">").split(/&&|\|\||[;|&]/)).map((s) => s.replace(/[()]/g, " ").trim()).filter((s) => s && !NOT_INVOCATION.test(s));
+  return scriptSkeleton(command2).split("\n").filter((l) => l.trim() && !NOT_INVOCATION.test(l)).flatMap((l) => l.replace(/\d*>&\d+|&>/g, ">").split(/&&|\|\||[;|&]/)).map((s) => s.replace(/[()]/g, " ").trim().replace(LEADING_KEYWORDS, "")).filter((s) => s && !NOT_INVOCATION.test(s));
 }
 var RUNNER_KINDS = {
   test: /\b(?:npm|pnpm|yarn|bun)(?:\s+--?[\w-]+(?:[= ](?!run\b|test\b|e2e\b)[^\s-]\S*)?)*\s+(?:run\s+)?(?:test|e2e)\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+(?:test|e2e):[\w-]+|\bvitest\b|\bjest\b|\bpytest\b|\bplaywright\s+test\b|\bgo\s+test\b|\bswift\s+test\b|\bcargo\s+test\b|\bnode\s+--test\b|\brspec\b|\bphpunit\b|\bdotnet\s+test\b|\bxcodebuild\b[^\n]*\btest\b|\b(?:just|make|task)\s+(?:test|e2e)\b/,
@@ -1181,19 +1202,51 @@ function isFixer(fragment2) {
   if (tool === "ruff" && withoutWrapper(fragment2).startsWith("ruff format")) return true;
   return false;
 }
-function onlyNarrows(extra) {
-  for (let i = 0; i < extra.length; i++) {
-    const w = extra[i];
+var OUTPUT_FLAGS = /* @__PURE__ */ new Set(["-q", "--quiet", "-v", "-vv", "-vvv", "--verbose", "-s", "-x", "--exitfirst", "--no-header", "--silent", "--bail", "--skip-build"]);
+function withoutOutputFlags(words, tool) {
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (OUTPUT_FLAGS.has(w) || /^--(?:tb|maxfail|color|reporter)=/.test(w)) continue;
+    if (tool === "pytest" && w === "-p" && (words[i + 1] === void 0 || words[i + 1].startsWith("no:"))) {
+      i++;
+      continue;
+    }
+    out.push(w);
+  }
+  return out;
+}
+var isPath = (w) => !w.startsWith("-") && (w.includes("/") || w === "." || isTestFile(w.split("::")[0]));
+var normPath = (w) => w.split("::")[0].replace(/^\.\//, "").replace(/\/$/, "");
+function scopeOf(words) {
+  const paths2 = [];
+  const rest = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
     if (w === "--") continue;
     if (TEST_FILTER_FLAGS.includes(w)) {
       i++;
       continue;
     }
     if (TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`))) continue;
-    if (isTestFile(w.split("::")[0])) continue;
-    return false;
+    if (isPath(w)) {
+      const p = normPath(w);
+      if (p !== "." && p !== "") paths2.push(p);
+    } else rest.push(w);
   }
-  return extra.length > 0;
+  return { paths: paths2, rest };
+}
+function covers(failed, broader, tool, kind) {
+  const f = withoutOutputFlags(failed, tool);
+  const b = withoutOutputFlags(broader, tool);
+  if (f.join(" ") === b.join(" ")) return true;
+  if (selects(b)) return false;
+  const fs = scopeOf(f);
+  const bs = scopeOf(b);
+  if (fs.rest.join(" ") !== bs.rest.join(" ")) return false;
+  if (bs.paths.length === 0) return kind === "lint" || fs.paths.every((p) => isTestFile(p));
+  if (fs.paths.length === 0) return false;
+  return fs.paths.every((p) => bs.paths.some((d) => p === d || !d.includes("...") && p.startsWith(`${d}/`)));
 }
 var selects = (words) => words.some((w) => TEST_FILTER_FLAGS.includes(w) || TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`)) || isTestFile(w.split("::")[0]));
 function summariseChecks(events) {
@@ -1228,12 +1281,10 @@ function summariseChecks(events) {
   }
   const checks = [...byCommand.values()];
   for (const c of checks) {
-    if (c.last !== "fail" || c.kind !== "test") continue;
-    const words = c.command.split(" ");
+    if (c.last !== "fail" || c.fixer || c.kind !== "test" && c.kind !== "lint") continue;
     for (const broader of checks) {
-      const b = broader.command.split(" ");
-      if (broader.tool !== c.tool || broader.kind !== "test" || b.length >= words.length || !b.every((w, i) => w === words[i])) continue;
-      if (selects(b) || !onlyNarrows(words.slice(b.length))) continue;
+      if (broader === c || broader.tool !== c.tool || broader.kind !== c.kind || broader.fixer) continue;
+      if (!covers(c.command.split(" "), broader.command.split(" "), c.tool, c.kind)) continue;
       const after = (passes.get(broader.command) ?? []).find((at) => at > c.lastAt);
       if (after && (!c.supersededBy || after < c.supersededBy.at)) c.supersededBy = { command: broader.command, at: after };
     }
@@ -2148,7 +2199,7 @@ async function autoPublish(o) {
     if (!o.created && st.pr !== void 0 && st.lastHash !== void 0 && st.mode === mode) {
       if (sectionHash(sectionFor(st.base ?? o.defaultBase, st.url)) === st.lastHash) return { status: "unchanged", body: "" };
     }
-    const view = await gh(["pr", "view", "--json", "number,body,baseRefName,url"]);
+    const view = await gh(["pr", "view", ...o.branch ? [o.branch] : [], "--json", "number,body,baseRefName,url"]);
     const pr = view.ok ? parseView(view.stdout) : null;
     if (!pr) {
       o.state.set(o.key, { noPrUntil: now + NO_PR_TTL_MS });
@@ -2184,9 +2235,9 @@ function git(args, cwd) {
   const p = spawnSync2("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return { ok: p.status === 0, out: p.stdout ?? "" };
 }
-function diffAgainst(base, cwd = process.cwd()) {
+function diffAgainst(base, cwd = process.cwd(), head = "HEAD") {
   for (const ref of [`origin/${base}`, base]) {
-    const d = git(["diff", "--no-color", `${ref}...HEAD`], cwd);
+    const d = git(["diff", "--no-color", `${ref}...${head}`], cwd);
     if (d.ok) return d.out;
   }
   return "";
@@ -2202,9 +2253,9 @@ function notIgnoredIn(cwd, paths2) {
   const ignored = new Set((p.stdout ?? "").split("\n").filter(Boolean));
   return paths2.filter((x) => !ignored.has(x));
 }
-function commitsSince(base, cwd = process.cwd()) {
+function commitsSince(base, cwd = process.cwd(), head = "HEAD") {
   for (const ref of [`origin/${base}`, base]) {
-    const r = git(["log", "--format=%H%x09%cI", `${ref}..HEAD`], cwd);
+    const r = git(["log", "--format=%H%x09%cI", `${ref}..${head}`], cwd);
     if (!r.ok) continue;
     return r.out.trim().split("\n").filter(Boolean).map((line) => {
       const [sha = "", at = ""] = line.split("	");
@@ -2885,8 +2936,8 @@ function loadConfig(repoRoot2, userDir = join4(homedir6(), ".config", "pdl")) {
 
 // src/pdl.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { readFileSync as readFileSync6 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync2, readFileSync as readFileSync6 } from "node:fs";
+import { dirname as dirname5, join as join5 } from "node:path";
 process.stdout.on("error", (e) => {
   if (e.code === "EPIPE") process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
   throw e;
@@ -2902,28 +2953,47 @@ function placeIn(dir) {
   const repo = git2(["rev-parse", "--show-toplevel"], dir);
   return repo ? { repo, branch: currentBranch(dir) } : void 0;
 }
-function placeResolver() {
+function rememberPlace(store2, sessionId, dir) {
+  const known = Object.entries(store2.rememberedPlaces(sessionId));
+  if (known.some(([d, p]) => d === dir || p.repo !== "" && (dir === p.repo || dir.startsWith(`${p.repo}/`)))) return;
+  const out = git2(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], dir).split("\n");
+  const [repo, common] = out;
+  if (!repo) return store2.rememberPlace(sessionId, dir, { repo: "", branch: "" });
+  const main = common?.endsWith("/.git") ? dirname5(common) : void 0;
+  store2.rememberPlace(sessionId, dir, { repo, branch: currentBranch(dir), ...main && main !== repo ? { main } : {} });
+}
+function gonePlace(remembered, dir) {
+  const p = remembered[dir] ?? Object.values(remembered).find((r) => r.repo !== "" && (dir === r.repo || dir.startsWith(`${r.repo}/`)));
+  return p && p.repo !== "" && !existsSync2(p.repo) ? p : void 0;
+}
+function placeResolver(remembered = {}) {
   const found = [];
   return (dir) => {
     const known = found.find((p2) => dir === p2.repo || dir.startsWith(`${p2.repo}/`));
     if (known) return known;
-    const p = placeIn(dir);
+    const gone = gonePlace(remembered, dir);
+    const p = placeIn(dir) ?? (gone ? { repo: gone.repo, branch: gone.branch } : void 0);
     if (p) found.push(p);
     return p;
   };
 }
-function logMeta(place, base, prUrl) {
+function gitAt(place, remembered) {
+  if (existsSync2(place.repo)) return { cwd: place.repo, head: "HEAD" };
+  const main = Object.values(remembered).find((r) => r.repo === place.repo && r.main)?.main;
+  return main && existsSync2(main) && place.branch ? { cwd: main, head: place.branch, branch: place.branch } : void 0;
+}
+function logMeta(place, base, prUrl, at = { cwd: place.repo, head: "HEAD" }) {
   return {
     ...prUrl ? { prUrl } : {},
-    repo: git2(["remote", "get-url", "origin"], place.repo) || "unknown",
+    repo: git2(["remote", "get-url", "origin"], at.cwd) || "unknown",
     branch: place.branch || "detached",
-    headSha: git2(["rev-parse", "--short", "HEAD"], place.repo),
+    headSha: git2(["rev-parse", "--short", at.head], at.cwd),
     repoRoot: place.repo,
-    diff: diffAgainst(base, place.repo),
-    commits: commitsSince(base, place.repo),
+    diff: diffAgainst(base, at.cwd, at.head),
+    commits: commitsSince(base, at.cwd, at.head),
     flagEditAfterFailure: config.tests.flag_edit_after_failure,
     extraRedactions: compileExtraPatterns(config.redaction.extra_patterns),
-    notIgnored: (paths2) => notIgnoredIn(place.repo, paths2)
+    notIgnored: (paths2) => notIgnoredIn(at.cwd, paths2)
   };
 }
 function decisionsIn(transcript) {
@@ -2933,7 +3003,7 @@ function renderSession(store2, sessionId) {
   const log = buildLog(store2.read(sessionId), logMeta({ repo: repoRoot(), branch: currentBranch() }, defaultBase()), decisionsIn(findTranscript(sessionId)));
   return render(log, { maxChars: config.publish.max_chars });
 }
-function renderBranch(store2, place, base, prUrl) {
+function renderBranch(store2, place, base, prUrl, at) {
   const merged = eventsForBranch(store2, place.repo, place.branch);
   const seen = /* @__PURE__ */ new Set();
   const decisions = merged.sessions.flatMap(
@@ -2948,7 +3018,7 @@ function renderBranch(store2, place, base, prUrl) {
     seen.add(key);
     return true;
   });
-  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl), sessions: merged.sessions }, decisions);
+  const log = buildLog(merged.events, { ...logMeta(place, base, prUrl, at), sessions: merged.sessions }, decisions);
   return render(log, { maxChars: config.publish.max_chars });
 }
 function build(store2, sessionId) {
@@ -2996,13 +3066,15 @@ async function hook(store2) {
     const payload = raw.trim() ? JSON.parse(raw) : {};
     const event = handleHook(store2, payload);
     const sessionId = typeof payload["session_id"] === "string" ? payload["session_id"] : "";
+    if (sessionId && event && "dir" in event && event.dir) rememberPlace(store2, sessionId, event.dir);
     const created = config.publish.on_pr_create && event ? detectPrCreation(event) !== null : false;
     const stopped = payload["hook_event_name"] === "Stop";
     if (!sessionId || !(created || stopped)) return;
     const home = { repo: repoRoot(), branch: currentBranch() };
     const turns = store2.turns().filter((t) => t.session === sessionId);
     const since = turns[turns.length - 1]?.at ?? "";
-    const plan = planTurn(store2.read(sessionId).filter((e) => e.at > since), home, placeResolver());
+    const remembered = store2.rememberedPlaces(sessionId);
+    const plan = planTurn(store2.read(sessionId).filter((e) => e.at > since), home, placeResolver(remembered));
     const transcript = typeof payload["transcript_path"] === "string" ? payload["transcript_path"] : void 0;
     const turn = {
       session: sessionId,
@@ -3016,14 +3088,17 @@ async function hook(store2) {
     const createdAt = created && event ? placeOf(event, [turn]) : void 0;
     const targets = createdAt ? [createdAt].filter((p) => p.branch !== "") : plan.touched;
     for (const place of targets) {
+      const at = gitAt(place, remembered);
+      if (!at) continue;
       await autoPublish({
         key: `${place.repo}#${place.branch}`,
         created,
         mode: config.publish.mode,
-        defaultBase: defaultBase(place.repo),
+        defaultBase: defaultBase(at.cwd),
+        ...at.branch ? { branch: at.branch } : {},
         state: publishState,
-        gh: ghIn(place.repo),
-        build: (base, url) => renderBranch(store2, place, base, url)
+        gh: ghIn(at.cwd),
+        build: (base, url) => renderBranch(store2, place, base, url, at)
       });
     }
   } catch {

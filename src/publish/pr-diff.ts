@@ -14,9 +14,9 @@ function git(args: string[], cwd: string): { ok: boolean; out: string } {
  * this branch's diff. Empty on any failure: the diff flags are an addition to
  * the log, never a reason for it not to publish.
  */
-export function diffAgainst(base: string, cwd: string = process.cwd()): string {
+export function diffAgainst(base: string, cwd: string = process.cwd(), head = 'HEAD'): string {
   for (const ref of [`origin/${base}`, base]) {
-    const d = git(['diff', '--no-color', `${ref}...HEAD`], cwd);
+    const d = git(['diff', '--no-color', `${ref}...${head}`], cwd);
     if (d.ok) return d.out;
   }
   return '';
@@ -47,9 +47,9 @@ export function notIgnoredIn(cwd: string, paths: string[]): string[] {
  * a commit last took its form: a rebase or amend moves it to then. Empty on
  * any failure.
  */
-export function commitsSince(base: string, cwd: string = process.cwd()): { sha: string; at: string }[] {
+export function commitsSince(base: string, cwd: string = process.cwd(), head = 'HEAD'): { sha: string; at: string }[] {
   for (const ref of [`origin/${base}`, base]) {
-    const r = git(['log', '--format=%H%x09%cI', `${ref}..HEAD`], cwd);
+    const r = git(['log', '--format=%H%x09%cI', `${ref}..${head}`], cwd);
     if (!r.ok) continue;
     return r.out.trim().split('\n').filter(Boolean).map((line) => {
       const [sha = '', at = ''] = line.split('\t');
