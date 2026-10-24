@@ -3,7 +3,15 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { TimelineEvent } from './types.ts';
-import type { Turn } from './branch.ts';
+import type { Place, Turn } from './branch.ts';
+
+/**
+ * Where a directory was when the session first worked in it, kept so a
+ * worktree deleted before its turn ends is still attributed to its branch.
+ * `main` is the repository's main working tree, where git and gh can still
+ * run for that branch once the worktree is gone.
+ */
+export type RememberedPlace = Place & { main?: string };
 
 const DAY_MS = 86_400_000;
 
@@ -30,11 +38,33 @@ export class EventStore {
    * that is not a plain id is hashed rather than rejected: the store must never
    * lose events, and must never write outside its own directory.
    */
-  #fileFor(sessionId: string): string {
-    const safe = /^[A-Za-z0-9._-]{1,128}$/.test(sessionId) && !sessionId.startsWith('.')
+  #safeId(sessionId: string): string {
+    return /^[A-Za-z0-9._-]{1,128}$/.test(sessionId) && !sessionId.startsWith('.')
       ? sessionId
       : createHash('sha256').update(sessionId).digest('hex').slice(0, 32);
-    return join(this.#dir, `${safe}.jsonl`);
+  }
+
+  #fileFor(sessionId: string): string {
+    return join(this.#dir, `${this.#safeId(sessionId)}.jsonl`);
+  }
+
+  #placesFile(sessionId: string): string {
+    return join(this.#root, 'places', `${this.#safeId(sessionId)}.json`);
+  }
+
+  /** The places remembered for a session's directories, by directory. */
+  rememberedPlaces(sessionId: string): Record<string, RememberedPlace> {
+    try {
+      return JSON.parse(readFileSync(this.#placesFile(sessionId), 'utf8')) as Record<string, RememberedPlace>;
+    } catch {
+      return {};
+    }
+  }
+
+  rememberPlace(sessionId: string, dir: string, place: RememberedPlace): void {
+    const all = { ...this.rememberedPlaces(sessionId), [dir]: place };
+    mkdirSync(join(this.#root, 'places'), { recursive: true, mode: 0o700 });
+    writeFileSync(this.#placesFile(sessionId), JSON.stringify(all));
   }
 
   append(sessionId: string, event: TimelineEvent): void {
@@ -65,6 +95,7 @@ export class EventStore {
   purge(): number {
     const files = this.#sessionFiles();
     for (const f of files) rmSync(join(this.#dir, f), { force: true });
+    rmSync(join(this.#root, 'places'), { recursive: true, force: true });
     return files.length;
   }
 
@@ -109,6 +140,7 @@ export class EventStore {
       try {
         if (statSync(path).mtimeMs < cutoff) {
           rmSync(path, { force: true });
+          rmSync(this.#placesFile(f.slice(0, -'.jsonl'.length)), { force: true });
           removed++;
         }
       } catch {

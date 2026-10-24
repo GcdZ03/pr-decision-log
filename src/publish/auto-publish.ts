@@ -90,6 +90,8 @@ export type AutoPublishOptions = {
   /** Renders the log with the PR diffed against `base`, linking to the PR at `url` when known. Called only once a PR is known to exist. */
   build: (base: string, url?: string) => string;
   defaultBase: string;
+  /** The branch to look the PR up by, when `gh` runs from a checkout that is not on it. */
+  branch?: string;
   state: PublishStateStore;
   now?: number;
   gh?: GhRunner;
@@ -140,7 +142,7 @@ export async function autoPublish(o: AutoPublishOptions): Promise<AutoPublishRes
       if (sectionHash(sectionFor(st.base ?? o.defaultBase, st.url)) === st.lastHash) return { status: 'unchanged', body: '' };
     }
 
-    const view = await gh(['pr', 'view', '--json', 'number,body,baseRefName,url']);
+    const view = await gh(['pr', 'view', ...(o.branch ? [o.branch] : []), '--json', 'number,body,baseRefName,url']);
     const pr = view.ok ? parseView(view.stdout) : null;
     if (!pr) {
       o.state.set(o.key, { noPrUntil: now + NO_PR_TTL_MS });

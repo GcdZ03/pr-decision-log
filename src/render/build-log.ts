@@ -115,6 +115,12 @@ export function buildLog(
     return text;
   };
 
+  /**
+   * A subagent's worktree inside the repository (`.claude/worktrees/<name>/`,
+   * `.worktrees/<name>/`). Its branch is merged into this one, so a file
+   * edited there is published under its path in the repository.
+   */
+  const NESTED_WORKTREE = /^(?:\.claude\/worktrees|\.?worktrees)\/[^/]+\//;
   const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   // Longest first, so `src/a/b.ts` wins over `b.ts` when matching a path's end.
   const diffPaths = fromDiff.map((f) => f.path).sort((a, b) => b.length - a.length);
@@ -124,7 +130,7 @@ export function buildLog(
    * one, and otherwise its name, never its location.
    */
   const rel = (p: string): string => {
-    if (meta.repoRoot) return relativize(p, meta.repoRoot);
+    if (meta.repoRoot) return relativize(p, meta.repoRoot).replace(NESTED_WORKTREE, '');
     if (!isAbsolute(p)) return p;
     return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename(p);
   };

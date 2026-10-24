@@ -161,6 +161,20 @@ test('an edit the diff does not contain is listed as not in the diff, and one ou
   assert.ok(!log.changes.some((c) => c.file.includes('scratch')));
 });
 
+// CreativeNotch PR #49 linked `.claude/worktrees/wf_…/Tests/…`: an edit made
+// in a subagent's worktree inside the repository, whose branch was merged
+// into this one. The reviewer needs the path the file has in this diff.
+test("an edit in a worktree nested in the repository is published under its path in the repository", () => {
+  const log = buildLog([
+    edit('e1', '/repo/.claude/worktrees/wf_164b2e66-38c-3/src/api.ts'),
+    edit('e2', '/repo/.worktrees/feature/src/wip.ts'),
+  ], { ...meta, diff: DIFF, repoRoot: '/repo' });
+
+  assert.equal(log.changes.find((c) => c.file === 'src/api.ts')?.edits, 1);
+  assert.equal(log.changes.find((c) => c.file === 'src/wip.ts')?.status, 'not in diff');
+  assert.ok(!JSON.stringify(log).includes('worktrees'));
+});
+
 test('with no diff, changes still come from the edits, as before', () => {
   const log = buildLog([edit('e1', 'src/a.ts')], meta);
 
