@@ -139,6 +139,20 @@ test('a narrower failed run is superseded by a later passing broader run of the 
   assert.deepEqual(toolStatuses(checks), [{ tool: 'swift test', status: 'pass' }]);
 });
 
+// CreativeNotch PR #49: the filter `"LimitsWiringTests|ShelfPendingCopyTests"`
+// is not one plain word, so its value was blanked and the check recorded as a
+// bare `swift test --filter`. The full `swift test` that passed 30 s later did
+// not cover it, because the rule wanted a value after the flag.
+test('a filtered run whose value was blanked is still covered by a later full run', () => {
+  const checks = summariseChecks([
+    run('swift test --filter "LimitsWiringTests|ShelfPendingCopyTests" 2>&1 | tail', 'fail', '2026-10-24T01:50:25Z'),
+    run('swift test 2>&1 | grep -E "Executed"', 'pass', '2026-10-24T01:50:56Z'),
+  ]);
+
+  assert.deepEqual(checks.find((c) => c.command === 'swift test --filter')?.supersededBy, { command: 'swift test', at: '2026-10-24T01:50:56Z' });
+  assert.deepEqual(toolStatuses(checks), [{ tool: 'swift test', status: 'pass' }]);
+});
+
 test('a broader run that passed before the narrow failure, or a different narrow run, does not cover it', () => {
   const before = summariseChecks([run('swift test', 'pass', '2026-10-23T23:50:00Z'), run('swift test --filter A', 'fail', '2026-10-23T23:52:00Z')]);
   assert.deepEqual(toolStatuses(before), [{ tool: 'swift test', status: 'fail' }]);

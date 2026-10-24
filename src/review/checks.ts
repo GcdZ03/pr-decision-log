@@ -134,7 +134,9 @@ function onlyNarrows(extra: string[]): boolean {
   for (let i = 0; i < extra.length; i++) {
     const w = extra[i]!;
     if (w === '--') continue;
-    if (TEST_FILTER_FLAGS.includes(w) && extra[i + 1] !== undefined) { i++; continue; }
+    // A filter flag with no value after it had its value blanked as quoted
+    // text (`--filter "A|B"`), which still narrows.
+    if (TEST_FILTER_FLAGS.includes(w)) { i++; continue; }
     if (TEST_FILTER_FLAGS.some((f) => w.startsWith(`${f}=`))) continue;
     if (isTestFile(w.split('::')[0]!)) continue;
     return false;

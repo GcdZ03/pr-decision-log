@@ -1185,7 +1185,7 @@ function onlyNarrows(extra) {
   for (let i = 0; i < extra.length; i++) {
     const w = extra[i];
     if (w === "--") continue;
-    if (TEST_FILTER_FLAGS.includes(w) && extra[i + 1] !== void 0) {
+    if (TEST_FILTER_FLAGS.includes(w)) {
       i++;
       continue;
     }
@@ -1629,10 +1629,11 @@ function buildLog(recorded, meta, decisions = []) {
     for (const h of hits) rules.add(h);
     return text;
   };
+  const NESTED_WORKTREE = /^(?:\.claude\/worktrees|\.?worktrees)\/[^/]+\//;
   const fromDiff = meta.diff ? changedFiles(meta.diff) : [];
   const diffPaths = fromDiff.map((f) => f.path).sort((a, b) => b.length - a.length);
   const rel = (p) => {
-    if (meta.repoRoot) return relativize(p, meta.repoRoot);
+    if (meta.repoRoot) return relativize(p, meta.repoRoot).replace(NESTED_WORKTREE, "");
     if (!isAbsolute5(p)) return p;
     return diffPaths.find((d) => p.endsWith(`/${d}`)) ?? basename6(p);
   };
